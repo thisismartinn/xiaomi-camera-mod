@@ -76,6 +76,7 @@ public class ModuleMain extends XposedModule {
     private static final String STYLE_ORIGINAL = "2";
     private static final String STYLE_AUTHENTIC = "1";
     private static final int ASSET_ORIGINAL_BADGE = 3;
+    private static final int ASSET_ORIGINAL_PORTRAIT_BADGE = 4;
     private static volatile android.content.pm.ApplicationInfo moduleInfo;
 
     private static final String M10R = "M10R";
@@ -707,8 +708,9 @@ public class ModuleMain extends XposedModule {
                             if (original != null && authentic != null
                                     && images[0].getInt(original) == images[0].getInt(authentic)
                                     && isLeicaBadge(images[0].getInt(original))) {
+                                int badge = originalBadge(images[0].getInt(original));
                                 for (Field f : images) {
-                                    f.setInt(original, ASSET_ICON_BASE | ASSET_ORIGINAL_BADGE);
+                                    f.setInt(original, badge);
                                 }
                                 log(Log.INFO, TAG, "gave the Original colour style its own Leica UI badge");
                             }
@@ -726,7 +728,7 @@ public class ModuleMain extends XposedModule {
                     try {
                         if (result instanceof Integer id && isLeicaBadge(id)
                                 && STYLE_ORIGINAL.equals(getValue.invoke(chain.getThisObject(), 253))) {
-                            return ASSET_ICON_BASE | ASSET_ORIGINAL_BADGE;
+                            return originalBadge(id);
                         }
                     } catch (Throwable t) {
                         log(Log.ERROR, TAG, "could not fix the chosen style badge", t);
@@ -739,7 +741,7 @@ public class ModuleMain extends XposedModule {
                     try {
                         if (result instanceof Integer id && isLeicaBadge(id)
                                 && STYLE_ORIGINAL.equals(chain.getArg(0))) {
-                            return ASSET_ICON_BASE | ASSET_ORIGINAL_BADGE;
+                            return originalBadge(id);
                         }
                     } catch (Throwable t) {
                         log(Log.ERROR, TAG, "could not fix the style badge", t);
@@ -756,6 +758,20 @@ public class ModuleMain extends XposedModule {
                         + " does not match: " + t);
             }
         }
+    }
+
+    // The badge for Original: the portrait styles (Master, Leica) have their own badges, with the
+    // portrait frame above the name, so when the badge being replaced is a portrait one, Original
+    // gets a portrait badge as well.
+    private static int originalBadge(int sharedBadge) {
+        boolean portrait = false;
+        try {
+            Application app = currentApplication();
+            portrait = app != null
+                    && app.getResources().getResourceEntryName(sharedBadge).contains("portrait");
+        } catch (Throwable ignored) {
+        }
+        return ASSET_ICON_BASE | (portrait ? ASSET_ORIGINAL_PORTRAIT_BADGE : ASSET_ORIGINAL_BADGE);
     }
 
     // The Leica UI's badges are the drawables whose names end in _lc_sp
@@ -821,11 +837,13 @@ public class ModuleMain extends XposedModule {
 
     // One of the M10R images, read from the module's own APK.
     private static synchronized Drawable assetDrawable(Resources resources, int index) {
-        if (index == ASSET_ORIGINAL_BADGE) {
+        if (index == ASSET_ORIGINAL_BADGE || index == ASSET_ORIGINAL_PORTRAIT_BADGE) {
             try {
                 Application app = currentApplication();
                 Resources own = app.getPackageManager().getResourcesForApplication(moduleInfo);
-                return own.getDrawable(R.drawable.ic_cvtype_original_lc_sp, null);
+                return own.getDrawable(index == ASSET_ORIGINAL_PORTRAIT_BADGE
+                        ? R.drawable.ic_cvtype_original_portrait_lc_sp
+                        : R.drawable.ic_cvtype_original_lc_sp, null);
             } catch (Throwable t) {
                 Log.w(TAG, "cannot load the Original badge: " + t);
                 return new ColorDrawable(Color.TRANSPARENT);
