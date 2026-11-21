@@ -42,7 +42,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.2.2-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.2.3-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -76,10 +76,10 @@ jobs:
           2. Take a photo with a filter. `adb logcat -s HyperPaletteMod` shows `hooked 2 HEIC save path(s)`, `watching ...DCIM/Camera`, then for each save which path fired and `added re-edit data ...` or why it was skipped. The new photo should be about twice its usual size.
           3. Copy the **original** photo off the phone by cable (chat apps and an iPhone strip the data). Open it in the Media Editor, pick the filter, tap the selected filter again.
 
-          **New in 0.2.2:** Chrome photos (camera filter 655608) now get the 17 Ultra editor's own record for Chrome: filter id 142, strength 100, type LUT, version 2, Palette neutral. Take a new Chrome shot (old ones are skipped, they already have data) and open it in the editor: Chrome should be selected. The camera's real Tone/Soft light values are still not saved. The 0.2.1 probe log (`candy(`/`tag:` lines) is kept.
+          **New in 0.2.3:** a second read-only probe, on MIVIRenderTag.initParams, in case the first one never fired. Take a Chrome shot with a Palette and send `adb logcat -s HyperPaletteMod` (the whole start-up part: the lines saying `probing ...` or `cannot probe ...`, plus any `initParams tag:` / `candy(` lines). 0.2.2's Chrome record (id 142, LUT, version 2) is kept.
 
           The added data uses the saved photo as its own source and a neutral Palette (the pad starts at 0), because the 17 Ultra camera does not keep the unfiltered picture. Saving the camera's own filter and Palette values for true re-editing is planned, not included. See `palettemod/README.md`.
           EOF
-          gh release create "draft-v0.2.2.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.2.3.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.2.2 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.2.3 (Media Editor + Camera)" --notes-file notes.md
