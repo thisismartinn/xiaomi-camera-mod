@@ -28,6 +28,15 @@ final class ReEditInjector {
     static final int FILTER_STANDARD = 66048;   // the camera's id for "no filter"
     static final String NAMESPACE = "http://ns.xiaomi.com/photos/1.0/camera/reedit";
 
+    // The 17 Ultra editor's own record for Chrome, read from a JPEG it saved: version "2", type "LUT",
+    // id 142, strength 100, and the Palette values inside the script (here neutral).
+    static final int CAMERA_CHROME = 655608;
+    static final int EDITOR_CHROME = 142;
+    private static final String NATIVE_SCRIPT_HEAD = "Leica;VignetteStrength=0.35@StyleAdjustEffect;"
+            + "Algos=12;SharpenIntensity=0.0000;ContrastIntensity=";
+    private static final String NATIVE_SCRIPT_TAIL = ";SaturationIntensity=0.0000;Temperature=0.0000;"
+            + "Tint=0.0000;Grain=0.0000;VignetteIntensity=0.0000";
+
     private static final String RENDER_TYPE = "513";
     private static final String COLOR_PARAM_PREFIX = "@CubeLutEffect;cube_strength=0.0;lut_type=0;@";
     private static final String COLOR_PARAM_NEUTRAL = "@StyleAdjustEffect;Algos=0;SharpenIntensity=0.0;"
@@ -270,19 +279,22 @@ final class ReEditInjector {
     // ---- what the editor reads ---------------------------------------------------------------
 
     private static byte[] buildEdit(byte[] image, int filterId, int progress) throws IOException {
+        boolean nativeStyle = filterId == EDITOR_CHROME;
         ByteArrayOutputStream filter = new ByteArrayOutputStream();
         putVarint(filter, 1, filterId);
-        putVarint(filter, 2, progress);
-        putBytes(filter, 3, RENDER_TYPE.getBytes(StandardCharsets.UTF_8));
-        putBytes(filter, 4, (COLOR_PARAM_PREFIX + COLOR_PARAM_NEUTRAL)
-                .getBytes(StandardCharsets.UTF_8));
+        putVarint(filter, 2, nativeStyle ? 100 : progress);
+        putBytes(filter, 3, (nativeStyle ? "LUT" : RENDER_TYPE).getBytes(StandardCharsets.UTF_8));
+        putBytes(filter, 4, (nativeStyle ? NATIVE_SCRIPT_HEAD + "0.0000" + NATIVE_SCRIPT_TAIL
+                : COLOR_PARAM_PREFIX + COLOR_PARAM_NEUTRAL).getBytes(StandardCharsets.UTF_8));
         putBytes(filter, 5, "APPLY_FILTER".getBytes(StandardCharsets.UTF_8));
 
         ByteArrayOutputStream op = new ByteArrayOutputStream();
         putBytes(op, 1, "filter".getBytes(StandardCharsets.UTF_8));
-        putBytes(op, 2, "1.0".getBytes(StandardCharsets.UTF_8));
+        putBytes(op, 2, (nativeStyle ? "2" : "1.0").getBytes(StandardCharsets.UTF_8));
         putBytes(op, 3, filter.toByteArray());
-        putBytes(op, 11, "micamera".getBytes(StandardCharsets.UTF_8));
+        if (!nativeStyle) {
+            putBytes(op, 11, "micamera".getBytes(StandardCharsets.UTF_8));
+        }
 
         ByteArrayOutputStream inner = new ByteArrayOutputStream(image.length + 256);
         putBytes(inner, 1, image);

@@ -207,7 +207,8 @@ final class CameraFeatures {
             }
             return null;
         }
-        int filter = config.cameraFilter();
+        int filter = cameraFilter == ReEditInjector.CAMERA_CHROME ? ReEditInjector.EDITOR_CHROME
+                : config.cameraFilter();
         try {
             byte[] injected = ReEditInjector.inject(file, filter, 0);
             if (injected != null && logged.compareAndSet(false, true)) {
