@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">HyperEditorMod</string>
+    <string name="module_description">Draft. Lets the Xiaomi Media Editor open its Palette (Saturation and Tone) pad on a phone that is not in the editor\'s built-in device list.</string>
+</resources>
