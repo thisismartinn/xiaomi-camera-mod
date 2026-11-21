@@ -26,10 +26,13 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - uses: android-actions/setup-android@v3
-
+      # The hosted runner already has an Android SDK ($ANDROID_HOME); only the two packages this
+      # project needs are added.
       - name: Install SDK platform and build tools
-        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-37.0" "build-tools;37.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
 
