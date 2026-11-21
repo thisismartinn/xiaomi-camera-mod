@@ -1,0 +1,98 @@
+name: Build draft release (HyperCameraMod + HyperEditorMod)
+
+# Builds both module APKs and puts them in ONE DRAFT release, so nothing is published until the
+# draft is opened and published by hand. Older drafts made by this workflow are replaced.
+on:
+  push:
+    branches: ["claude/intelligent-darwin-aioit5"]
+    paths:
+      - "editormod/**"
+      - "cameramod/**"
+      - "settings.gradle.kts"
+      - "gradle/**"
+      - ".github/workflows/build-draft.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # The hosted runner already has an Android SDK ($ANDROID_HOME); only the two packages this
+      # project needs are added.
+      - name: Install SDK platform and build tools
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-37.0" "build-tools;37.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build
+        run: ./gradlew --no-daemon :cameramod:assembleRelease :editormod:assembleRelease
+
+      - name: Name the APKs
+        id: apk
+        run: |
+          short="$(git rev-parse --short HEAD)"
+          cam="HyperCameraMod-1.1.0-draft-$short.apk"
+          ed="HyperEditorMod-0.1.1-draft-$short.apk"
+          cp cameramod/build/outputs/apk/release/cameramod-release.apk "$cam"
+          cp editormod/build/outputs/apk/release/editormod-release.apk "$ed"
+          echo "cam=$cam" >> "$GITHUB_OUTPUT"
+          echo "ed=$ed" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HyperMods-draft
+          path: |
+            ${{ steps.apk.outputs.cam }}
+            ${{ steps.apk.outputs.ed }}
+
+      - name: Replace older drafts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[] | select(.draft and (.tag_name | test("^(editormod-|draft-)"))) | .id' |
+          while read -r id; do
+            [ -n "$id" ] && gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+          done
+          true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          **Draft, untested on a device.** Two modules that work together on a 17 Ultra.
+
+          **HyperEditorMod 0.1.1** (scope: Media Editor `com.miui.mediaeditor`). Lets the editor open its Palette pad (Saturation and Tone) on a phone outside its built-in device list, and keeps the numbers above the pad on one line.
+
+          **HyperCameraMod 1.1.0** (scope: Camera). Everything 1.0.10 did, plus an optional step that adds the re-edit data the editor needs to each saved HEIC (off by default):
+
+          ```
+          adb shell su -c "setprop camera.feature.palette_edit 1"   # 1 = photos taken with a filter, 2 = every HEIC
+          ```
+
+          How to test:
+          1. Install both APKs, enable them in LSPosed/Vector (HyperCameraMod: Camera; HyperEditorMod: Media Editor) and force-stop both apps.
+          2. Run the setprop above, open the Camera, take a photo with a filter.
+          3. `adb logcat -s HyperCameraMod` should show `hooked 2 HEIC save path(s)` and then `added palette re-edit data ...`.
+          4. Copy the **original** photo off the phone by cable (a chat app or an iPhone strips the data). Open it in the Media Editor, pick the filter, tap the selected filter again.
+
+          The added data uses the saved photo as its own source and a neutral Palette (editor filter 58 at 0 %), because the 17 Ultra camera does not keep the unfiltered picture: the pad starts at 0 and adjusts on top of the photo. The photo roughly doubles in size. See `cameramod/README.md` and `editormod/README.md`.
+          EOF
+          gh release create "draft-v1.1.0.${GITHUB_RUN_NUMBER}" \
+            "${{ steps.apk.outputs.cam }}" "${{ steps.apk.outputs.ed }}" \
+            --draft --prerelease --target "$GITHUB_SHA" \
+            --title "Draft: HyperCameraMod 1.1.0 + HyperEditorMod 0.1.1" --notes-file notes.md

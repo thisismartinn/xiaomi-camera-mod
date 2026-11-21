@@ -77,3 +77,29 @@ A Gradle module in this repository. It needs the Android SDK (compileSdk 37, bui
 ## Disclaimer
 
 An unofficial community module, not affiliated with Xiaomi or Leica. The three CMOS images in `src/main/assets/m10r` are taken from Xiaomi Camera. It hooks internal camera code and is provided as is, for personal use. Use it at your own risk.
+
+## Palette re-edit data in saved photos (experimental, off by default)
+
+The Media Editor opens its Palette pad (Saturation and Tone) only for a photo that carries re-edit data: an `edit` item and a `micamedit` XMP marker in the HEIC. The 18 Pro camera writes them. The 17 Ultra camera does not (it saves the filter name, not the Palette values), so the pad never opens for its photos, even with [HyperEditorMod](../editormod/README.md) installed.
+
+With `camera.feature.palette_edit` set, the module adds that data to each HEIC the camera saves, right after the file is written:
+
+| Value | Photos changed |
+| ----- | -------------- |
+| `0` (default) | none |
+| `1` | HEIC photos taken with a filter |
+| `2` | every HEIC photo |
+
+```bash
+adb shell su -c "setprop camera.feature.palette_edit 1"
+```
+
+It is read on every save, so no restart is needed. `camera.feature.palette_edit_filter` (default `58`) sets the editor filter the data names.
+
+**What it adds, and what it cannot.** The 17 Ultra camera does not keep the unfiltered picture, so the added data uses the saved photo itself as the source and a neutral operation (filter 58 at 0 %, every Palette value 0). In the editor the pad starts at 0 and adjusts on top of the photo as it is; it does not re-open the Palette values chosen in the camera. The photo roughly doubles in size, because the source image is stored inside it.
+
+**Safety.** The result is read back and checked (every original item must read the same bytes, the new items must read back exactly) before anything is written; if a check fails the photo is left untouched. If writing the new file fails, the original bytes are written back. Photos the camera already marked with re-edit data are skipped.
+
+Check it: `adb logcat -s HyperCameraMod` prints `hooked 2 HEIC save path(s)` at camera start and, for the first photo, `added palette re-edit data on the normal save (...)` (or `parallel save`). Then copy the **original** photo off the phone by cable (a chat app or an iPhone strips the data) and open it in the editor with HyperEditorMod on.
+
+Camera layout read: 6.7.000500.0 (classes `n7.f` and `W8.e`). Not run on a device yet.
