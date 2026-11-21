@@ -11,8 +11,8 @@ android {
         applicationId = "io.martin.hypercameramod"
         minSdk = 26
         targetSdk = 37
-        versionCode = 13
-        versionName = "1.1.0-draft"
+        versionCode = 14
+        versionName = "1.1.1-draft"
     }
 
     buildTypes {

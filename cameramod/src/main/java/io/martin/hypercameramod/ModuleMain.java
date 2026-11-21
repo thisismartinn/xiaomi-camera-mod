@@ -10,6 +10,9 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.hardware.camera2.CameraCharacteristics;
+import android.media.MediaScannerConnection;
+import android.os.Environment;
+import android.os.FileObserver;
 import android.content.res.Resources;
 import android.os.Handler;
 import android.os.Looper;
@@ -21,6 +24,8 @@ import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -29,7 +34,13 @@ import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.nio.file.Files;
+import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipFile;
 
@@ -45,9 +56,10 @@ import io.github.libxposed.api.XposedModule;
 //  3. the Leica Essential CMOS (M10R) style, whose list entry is compiled out of this build. Off
 //     unless the system property camera.feature.m10r is 1: the hardware layer of the 17 Ultra
 //     has no M10R processing, so the style only gives a plain picture.
-//  4. optionally, the data the Media Editor needs to open its Palette pad on a photo (an "edit" item
-//     and an XMP marker in the HEIC), which this phone's camera does not write. Off unless the
-//     system property camera.feature.palette_edit is 1 or 2: see ReEditInjector.
+//  4. the data the Media Editor needs to open its Palette pad on a photo (an "edit" item and an XMP
+//     marker in the HEIC), which this phone's camera does not write. On for photos taken with a
+//     filter; camera.feature.palette_edit 0 turns it off, 2 extends it to every HEIC: see
+//     ReEditInjector.
 // Each part is independent; one that does not fit the camera build is skipped and logged.
 public class ModuleMain extends XposedModule {
     private static final String TAG = "HyperCameraMod";
@@ -882,13 +894,19 @@ public class ModuleMain extends XposedModule {
 
     // The Media Editor opens its Palette pad only for a photo that carries re-edit data: an "edit"
     // item and a micamedit XMP marker in the HEIC. The 18 Pro camera writes them; this camera does
-    // not. With camera.feature.palette_edit set to 1 (photos taken with a filter) or 2 (every HEIC),
-    // each HEIC the camera saves gets them added right after it is written, with a neutral Palette
-    // (see ReEditInjector). camera.feature.palette_edit_filter picks the editor filter the data names
-    // (default 58). Off unless set; read on every save, so setprop takes effect at once.
+    // not. By default (camera.feature.palette_edit = 1) each HEIC taken with a filter gets them
+    // added right after it is written, with a neutral Palette (see ReEditInjector). 2 does it for
+    // every HEIC, 0 turns it off. camera.feature.palette_edit_filter picks the editor filter the
+    // data names (default 58). Read on every save, so setprop takes effect at once.
+    //
+    // Two ways in, because which save path a given photo takes was only read, not run: the two save
+    // methods of the camera are hooked, and a watcher on DCIM/Camera picks up any finished HEIC the
+    // hooks missed. A photo that already has the data is skipped, so both can run on the same file.
     private static final String REEDIT_KEY = "camera.feature.palette_edit";
     private static final String REEDIT_FILTER_KEY = "camera.feature.palette_edit_filter";
     private static final int REEDIT_FILTER_DEFAULT = 58;
+    private static final int REEDIT_MODE_DEFAULT = 1;
+    private static final String CAMERA_DIR = "DCIM/Camera";
 
     // The two places the camera writes a HEIC: the normal save (returns the MediaStore uri of the
     // finished file) and the parallel save (returns the file's bytes, or nothing when it wrote
@@ -902,11 +920,15 @@ public class ModuleMain extends XposedModule {
             new SaveProfile("6.7", "n7.f", "c", "W8.e", "e"),
     };
     private final AtomicBoolean reEditLogged = new AtomicBoolean();
+    private final AtomicInteger reEditSeen = new AtomicInteger();
+    private volatile FileObserver cameraWatcher;   // kept: an unreferenced FileObserver is collected
+    private volatile ScheduledExecutorService watcherPool;
 
     private void installReEditHook(ClassLoader loader) {
         if (reEditHooked) {
             return;
         }
+        installCameraWatcher();
         for (SaveProfile profile : SAVE_PROFILES) {
             int hooks = 0;
             try {
@@ -924,6 +946,10 @@ public class ModuleMain extends XposedModule {
                 }
                 hook(write).intercept(chain -> {
                     Object result = chain.proceed();
+                    if (reEditSeen.incrementAndGet() <= 8) {
+                        log(Log.INFO, TAG, "normal HEIC save finished: " + result + ", palette_edit="
+                                + reEditMode());
+                    }
                     if (result instanceof Uri uri && reEditMode() != 0) {
                         try {
                             reEditUri(uri);
@@ -954,6 +980,11 @@ public class ModuleMain extends XposedModule {
                 hook(write).intercept(chain -> {
                     Object result = chain.proceed();
                     int mode = reEditMode();
+                    if (reEditSeen.incrementAndGet() <= 8) {
+                        log(Log.INFO, TAG, "parallel HEIC save finished: "
+                                + (result instanceof byte[] b ? b.length + " bytes" : result)
+                                + ", palette_edit=" + mode);
+                    }
                     if (mode != 0 && result instanceof byte[] bytes && bytes.length > 0) {
                         try {
                             byte[] injected = reEditBytes(bytes, mode, "parallel save");
@@ -981,7 +1012,7 @@ public class ModuleMain extends XposedModule {
     }
 
     private static int reEditMode() {
-        int mode = propertyInt(REEDIT_KEY, 0);
+        int mode = propertyInt(REEDIT_KEY, REEDIT_MODE_DEFAULT);
         return mode < 0 || mode > 2 ? 0 : mode;
     }
 
@@ -1037,6 +1068,11 @@ public class ModuleMain extends XposedModule {
         }
         int cameraFilter = ReEditInjector.cameraFilterId(file);
         if (mode == 1 && (cameraFilter < 0 || cameraFilter == ReEditInjector.FILTER_STANDARD)) {
+            if (reEditSeen.get() <= 8) {
+                log(Log.INFO, TAG, "palette re-edit data skipped on the " + path + ": no filter in this "
+                        + "photo (camera filter id " + cameraFilter + "); camera.feature.palette_edit=2 "
+                        + "does every HEIC");
+            }
             return null;   // no filter was used
         }
         int filter = propertyInt(REEDIT_FILTER_KEY, REEDIT_FILTER_DEFAULT);
@@ -1047,10 +1083,88 @@ public class ModuleMain extends XposedModule {
                         + cameraFilter + ", editor filter " + filter + ", +"
                         + (injected.length - file.length) + " bytes); logging the first photo only");
             }
+            if (injected == null && reEditSeen.get() <= 8) {
+                log(Log.INFO, TAG, "palette re-edit data already in the photo (" + path + ")");
+            }
             return injected;
         } catch (IOException e) {
             log(Log.WARN, TAG, "photo left as it was (" + path + "): " + e.getMessage());
             return null;
+        }
+    }
+
+    // ---- the watcher: any finished HEIC in DCIM/Camera ---------------------------------------------
+
+    private synchronized void installCameraWatcher() {
+        if (cameraWatcher != null) {
+            return;
+        }
+        try {
+            File dir = new File(Environment.getExternalStorageDirectory(), CAMERA_DIR);
+            if (!dir.isDirectory()) {
+                log(Log.WARN, TAG, "no " + dir + ", the DCIM/Camera watcher is off");
+                return;
+            }
+            ScheduledExecutorService pool = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "HyperCameraMod-reedit");
+                t.setDaemon(true);
+                return t;
+            });
+            FileObserver observer = new FileObserver(dir.getPath(),
+                    FileObserver.MOVED_TO | FileObserver.CLOSE_WRITE) {
+                @Override
+                public void onEvent(int event, String name) {
+                    if (name != null && name.toLowerCase(Locale.ROOT).endsWith(".heic")) {
+                        File file = new File(dir, name);
+                        pool.schedule(() -> reEditFile(file), 2, TimeUnit.SECONDS);
+                    }
+                }
+            };
+            observer.startWatching();
+            watcherPool = pool;
+            cameraWatcher = observer;
+            log(Log.INFO, TAG, "watching " + dir + " for finished HEIC photos");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot watch DCIM/Camera: " + t);
+        }
+    }
+
+    // A finished file, two seconds after its last event: wait until its size is steady, add the
+    // data, write it back (the original bytes go back if that fails) and let the media scanner
+    // refresh the file's size.
+    private void reEditFile(File file) {
+        try {
+            int mode = reEditMode();
+            if (mode == 0 || !file.isFile()) {
+                return;
+            }
+            long length = file.length();
+            Thread.sleep(500);
+            if (file.length() != length || length < 1024) {
+                return;   // still being written; its next event comes back here
+            }
+            byte[] bytes = Files.readAllBytes(file.toPath());
+            byte[] injected = reEditBytes(bytes, mode, "file watcher (" + file.getName() + ")");
+            if (injected == null) {
+                return;
+            }
+            try (FileOutputStream out = new FileOutputStream(file)) {
+                out.write(injected);
+                out.getFD().sync();
+            } catch (IOException | RuntimeException e) {
+                log(Log.ERROR, TAG, "writing " + file + " failed, putting the original back: " + e);
+                try (FileOutputStream out = new FileOutputStream(file)) {
+                    out.write(bytes);
+                    out.getFD().sync();
+                }
+                return;
+            }
+            Application app = currentApplication();
+            if (app != null) {
+                MediaScannerConnection.scanFile(app, new String[]{file.getPath()}, null, null);
+            }
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "palette re-edit data not added to " + file + ": " + t);
         }
     }
 

@@ -44,7 +44,7 @@ jobs:
         id: apk
         run: |
           short="$(git rev-parse --short HEAD)"
-          cam="HyperCameraMod-1.1.0-draft-$short.apk"
+          cam="HyperCameraMod-1.1.1-draft-$short.apk"
           ed="HyperEditorMod-0.1.1-draft-$short.apk"
           cp cameramod/build/outputs/apk/release/cameramod-release.apk "$cam"
           cp editormod/build/outputs/apk/release/editormod-release.apk "$ed"
@@ -78,21 +78,21 @@ jobs:
 
           **HyperEditorMod 0.1.1** (scope: Media Editor `com.miui.mediaeditor`). Lets the editor open its Palette pad (Saturation and Tone) on a phone outside its built-in device list, and keeps the numbers above the pad on one line.
 
-          **HyperCameraMod 1.1.0** (scope: Camera). Everything 1.0.10 did, plus an optional step that adds the re-edit data the editor needs to each saved HEIC (off by default):
+          **HyperCameraMod 1.1.1** (scope: Camera). Everything 1.0.10 did, plus a step that adds the re-edit data the editor needs to each saved HEIC taken with a filter (on by default; `0` turns it off):
 
           ```
-          adb shell su -c "setprop camera.feature.palette_edit 1"   # 1 = photos taken with a filter, 2 = every HEIC
+          adb shell su -c "setprop camera.feature.palette_edit 2"   # 0 = off, 1 = photos taken with a filter (default), 2 = every HEIC
           ```
 
           How to test:
           1. Install both APKs, enable them in LSPosed/Vector (HyperCameraMod: Camera; HyperEditorMod: Media Editor) and force-stop both apps.
-          2. Run the setprop above, open the Camera, take a photo with a filter.
-          3. `adb logcat -s HyperCameraMod` should show `hooked 2 HEIC save path(s)` and then `added palette re-edit data ...`.
+          2. Open the Camera and take a photo with a filter (or run the setprop above with 2 first, to include photos without one).
+          3. `adb logcat -s HyperCameraMod` shows `hooked 2 HEIC save path(s)`, `watching ...DCIM/Camera`, then for each save which path fired and either `added palette re-edit data ...` or why it was skipped. The new photo should be about twice its usual size.
           4. Copy the **original** photo off the phone by cable (a chat app or an iPhone strips the data). Open it in the Media Editor, pick the filter, tap the selected filter again.
 
           The added data uses the saved photo as its own source and a neutral Palette (editor filter 58 at 0 %), because the 17 Ultra camera does not keep the unfiltered picture: the pad starts at 0 and adjusts on top of the photo. The photo roughly doubles in size. See `cameramod/README.md` and `editormod/README.md`.
           EOF
-          gh release create "draft-v1.1.0.${GITHUB_RUN_NUMBER}" \
+          gh release create "draft-v1.1.1.${GITHUB_RUN_NUMBER}" \
             "${{ steps.apk.outputs.cam }}" "${{ steps.apk.outputs.ed }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperCameraMod 1.1.0 + HyperEditorMod 0.1.1" --notes-file notes.md
+            --title "Draft: HyperCameraMod 1.1.1 + HyperEditorMod 0.1.1" --notes-file notes.md
