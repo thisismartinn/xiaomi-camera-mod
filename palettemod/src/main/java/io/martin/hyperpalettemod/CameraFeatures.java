@@ -73,6 +73,7 @@ final class CameraFeatures {
             return;
         }
         installWatcher();
+        new ParamProbe(module).install(loader);
         for (SaveProfile profile : SAVE_PROFILES) {
             int hooks = 0;
             try {
