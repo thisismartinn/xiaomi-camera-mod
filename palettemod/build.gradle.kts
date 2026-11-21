@@ -3,16 +3,16 @@ plugins {
 }
 
 android {
-    namespace = "io.martin.hypereditormod"
+    namespace = "io.martin.hyperpalettemod"
     compileSdk = 37
     buildToolsVersion = "37.0.0"
 
     defaultConfig {
-        applicationId = "io.martin.hypereditormod"
-        minSdk = 26
+        applicationId = "io.martin.hyperpalettemod"
+        minSdk = 30
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.1.1-draft"
+        versionCode = 1
+        versionName = "0.2.0-draft"
     }
 
     buildTypes {
@@ -43,4 +43,5 @@ android {
 
 dependencies {
     compileOnly(libs.libxposed.api)
+    implementation(libs.libxposed.service)
 }

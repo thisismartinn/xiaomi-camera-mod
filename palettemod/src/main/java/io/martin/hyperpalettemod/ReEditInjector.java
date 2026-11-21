@@ -1,4 +1,4 @@
-package io.martin.hypercameramod;
+package io.martin.hyperpalettemod;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;

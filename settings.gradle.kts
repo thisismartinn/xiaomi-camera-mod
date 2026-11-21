@@ -26,4 +26,4 @@ rootProject.name = "HyperFilmFilters"
 
 include(":app")
 include(":cameramod")
-include(":editormod")
+include(":palettemod")

@@ -1,13 +1,12 @@
-name: Build draft release (HyperCameraMod + HyperEditorMod)
+name: Build draft release (HyperPaletteMod)
 
-# Builds both module APKs and puts them in ONE DRAFT release, so nothing is published until the
+# Builds the HyperPaletteMod APK and puts it in a DRAFT release, so nothing is published until the
 # draft is opened and published by hand. Older drafts made by this workflow are replaced.
 on:
   push:
     branches: ["claude/intelligent-darwin-aioit5"]
     paths:
-      - "editormod/**"
-      - "cameramod/**"
+      - "palettemod/**"
       - "settings.gradle.kts"
       - "gradle/**"
       - ".github/workflows/build-draft.yml"
@@ -38,25 +37,19 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Build
-        run: ./gradlew --no-daemon :cameramod:assembleRelease :editormod:assembleRelease
+        run: ./gradlew --no-daemon :palettemod:assembleRelease
 
-      - name: Name the APKs
+      - name: Name the APK
         id: apk
         run: |
-          short="$(git rev-parse --short HEAD)"
-          cam="HyperCameraMod-1.1.1-draft-$short.apk"
-          ed="HyperEditorMod-0.1.1-draft-$short.apk"
-          cp cameramod/build/outputs/apk/release/cameramod-release.apk "$cam"
-          cp editormod/build/outputs/apk/release/editormod-release.apk "$ed"
-          echo "cam=$cam" >> "$GITHUB_OUTPUT"
-          echo "ed=$ed" >> "$GITHUB_OUTPUT"
+          name="HyperPaletteMod-0.2.0-draft-$(git rev-parse --short HEAD).apk"
+          cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: HyperMods-draft
-          path: |
-            ${{ steps.apk.outputs.cam }}
-            ${{ steps.apk.outputs.ed }}
+          name: HyperPaletteMod
+          path: ${{ steps.apk.outputs.name }}
 
       - name: Replace older drafts
         env:
@@ -74,25 +67,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          **Draft, untested on a device.** Two modules that work together on a 17 Ultra.
+          **Draft, untested on a device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen. It replaces the earlier HyperEditorMod draft and the re-edit step briefly added to HyperCameraMod; the original HyperCameraMod stays as it is and can be installed alongside.
 
-          **HyperEditorMod 0.1.1** (scope: Media Editor `com.miui.mediaeditor`). Lets the editor open its Palette pad (Saturation and Tone) on a phone outside its built-in device list, and keeps the numbers above the pad on one line.
+          Settings (open the module's app): open the Palette pad on this phone; keep the pad's numbers on one line; add re-edit data to saved HEIC photos (off / photos taken with a filter / every photo, default: filtered); the editor filter id the data names (58).
 
-          **HyperCameraMod 1.1.1** (scope: Camera). Everything 1.0.10 did, plus a step that adds the re-edit data the editor needs to each saved HEIC taken with a filter (on by default; `0` turns it off):
+          How to test on a 17 Ultra:
+          1. Install, enable in LSPosed/Vector with **Camera** and **Media Editor** in the scope, open the module's app (it should say *Active*), then force-stop both apps.
+          2. Take a photo with a filter. `adb logcat -s HyperPaletteMod` shows `hooked 2 HEIC save path(s)`, `watching ...DCIM/Camera`, then for each save which path fired and `added re-edit data ...` or why it was skipped. The new photo should be about twice its usual size.
+          3. Copy the **original** photo off the phone by cable (chat apps and an iPhone strip the data). Open it in the Media Editor, pick the filter, tap the selected filter again.
 
-          ```
-          adb shell su -c "setprop camera.feature.palette_edit 2"   # 0 = off, 1 = photos taken with a filter (default), 2 = every HEIC
-          ```
-
-          How to test:
-          1. Install both APKs, enable them in LSPosed/Vector (HyperCameraMod: Camera; HyperEditorMod: Media Editor) and force-stop both apps.
-          2. Open the Camera and take a photo with a filter (or run the setprop above with 2 first, to include photos without one).
-          3. `adb logcat -s HyperCameraMod` shows `hooked 2 HEIC save path(s)`, `watching ...DCIM/Camera`, then for each save which path fired and either `added palette re-edit data ...` or why it was skipped. The new photo should be about twice its usual size.
-          4. Copy the **original** photo off the phone by cable (a chat app or an iPhone strips the data). Open it in the Media Editor, pick the filter, tap the selected filter again.
-
-          The added data uses the saved photo as its own source and a neutral Palette (editor filter 58 at 0 %), because the 17 Ultra camera does not keep the unfiltered picture: the pad starts at 0 and adjusts on top of the photo. The photo roughly doubles in size. See `cameramod/README.md` and `editormod/README.md`.
+          The added data uses the saved photo as its own source and a neutral Palette (the pad starts at 0), because the 17 Ultra camera does not keep the unfiltered picture. Saving the camera's own filter and Palette values for true re-editing is planned, not included. See `palettemod/README.md`.
           EOF
-          gh release create "draft-v1.1.1.${GITHUB_RUN_NUMBER}" \
-            "${{ steps.apk.outputs.cam }}" "${{ steps.apk.outputs.ed }}" \
+          gh release create "draft-v0.2.0.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperCameraMod 1.1.1 + HyperEditorMod 0.1.1" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.2.0 (Media Editor + Camera)" --notes-file notes.md
