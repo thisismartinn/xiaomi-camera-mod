@@ -42,7 +42,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperEditorMod-0.1.0-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperEditorMod-0.1.1-draft-$(git rev-parse --short HEAD).apk"
           cp editormod/build/outputs/apk/release/editormod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -75,8 +75,10 @@ jobs:
           3. Open an **original** 18 Pro Palette photo (copied by cable or file manager), pick its filter, tap the selected filter again.
           4. `adb logcat -s HyperEditorMod` should show `Palette device list [madrid, venice, hongkong] -> [nezha, venice, hongkong]`.
 
+          0.1.1 also widens the Saturation and Tone numbers above the pad, which wrapped onto two lines.
+
           It only removes the device check. The pad needs the photo's own re-edit data, which the 18 Pro camera writes and the 17 Ultra camera does not. See `editormod/README.md`.
           EOF
-          gh release create "editormod-v0.1.0-draft.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "editormod-v0.1.1-draft.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "HyperEditorMod 0.1.0 (draft)" --notes-file notes.md
+            --title "HyperEditorMod 0.1.1 (draft)" --notes-file notes.md

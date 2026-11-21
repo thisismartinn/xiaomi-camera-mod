@@ -8,7 +8,9 @@ An LSPosed/Vector module (libxposed API 101-102) for the Xiaomi **Media Editor**
 
 The editor opens the pad only when `Build.DEVICE` is in a hidden `String[]` in class `gt.a`, which holds `madrid`, `venice` and `hongkong` (the 18 series). The same array is checked at four places of the Palette UI. On the 17 Ultra (`nezha`) the check fails, so the editor names the filter a photo used but never shows the pad.
 
-The module finds that array when the editor starts (by its content, not by a field name) and, if this phone is not already in it, writes `Build.DEVICE` over the first entry. A phone that is already listed is left alone. Nothing else in the editor is touched.
+The module finds that array when the editor starts (by its content, not by a field name) and, if this phone is not already in it, writes `Build.DEVICE` over the first entry. A phone that is already listed is left alone.
+
+It also widens the Saturation and Tone number fields above the pad. The editor makes them a fixed 16 dp wide, which fits the 18 series' font; with the 17 Ultra's font a value such as `20` wrapped onto two lines. The fields are made as wide as `100` needs in their own font.
 
 ## What it does not change
 
