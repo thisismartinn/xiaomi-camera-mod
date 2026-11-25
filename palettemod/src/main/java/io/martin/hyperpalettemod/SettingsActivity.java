@@ -36,6 +36,7 @@ public class SettingsActivity extends Activity {
     private Button scopeButton;
     private Switch padSwitch;
     private Switch widthSwitch;
+    private Switch javaFilterSwitch;
     private RadioGroup modeGroup;
     private final int[] modeIds = new int[3];
     private EditText filterField;
@@ -135,6 +136,12 @@ public class SettingsActivity extends Activity {
         root.addView(note("The editor filter the added data names (" + Settings.CAMERA_FILTER_DEFAULT
                 + " by default), shown selected at 0 % so it does not change the picture."));
 
+        javaFilterSwitch = switchRow(root, "Route filter through Java (experimental)",
+                "Turns off MIVI3 JPEG output and the HAL filter tag so Java FilterProcessor "
+                        + "(di.g.a) can receive the unfiltered frame. Force-stop Camera after "
+                        + "changing.",
+                Settings.CAMERA_JAVA_FILTER);
+
         // ---- planned ----
         root.addView(section("Planned"));
         root.addView(note("Save the camera's own filter and Palette values so the editor can re-edit "
@@ -198,6 +205,8 @@ public class SettingsActivity extends Activity {
         loading = true;
         padSwitch.setChecked(prefs.getBoolean(Settings.EDITOR_PAD, Settings.EDITOR_PAD_DEFAULT));
         widthSwitch.setChecked(prefs.getBoolean(Settings.EDITOR_WIDTH, Settings.EDITOR_WIDTH_DEFAULT));
+        javaFilterSwitch.setChecked(prefs.getBoolean(Settings.CAMERA_JAVA_FILTER,
+                Settings.CAMERA_JAVA_FILTER_DEFAULT));
         int mode = prefs.getInt(Settings.CAMERA_MODE, Settings.CAMERA_MODE_DEFAULT);
         modeGroup.check(modeIds[mode < 0 || mode >= modeIds.length ? Settings.MODE_OFF : mode]);
         if (!filterField.hasFocus()) {

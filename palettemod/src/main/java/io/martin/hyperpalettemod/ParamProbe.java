@@ -1,5 +1,6 @@
 package io.martin.hyperpalettemod;
 
+import android.hardware.camera2.CaptureRequest;
 import android.media.Image;
 import android.util.Log;
 
@@ -7,6 +8,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.libxposed.api.XposedModule;
@@ -22,13 +24,17 @@ final class ParamProbe {
     private static final int MAX_LINES = 40;
 
     private final XposedModule module;
+    private final Config config;
     private final AtomicInteger lines = new AtomicInteger();
     private final AtomicInteger filterProcLines = new AtomicInteger();
+    private final AtomicBoolean jpegBypassLogged = new AtomicBoolean();
+    private final AtomicBoolean halTagBypassLogged = new AtomicBoolean();
     private final ConcurrentHashMap<Integer, Integer> filterMap = new ConcurrentHashMap<>();
     private volatile String last;
 
-    ParamProbe(XposedModule module) {
+    ParamProbe(XposedModule module, Config config) {
         this.module = module;
+        this.config = config;
     }
 
     // Returns the editor's mGeneralFilterId learned from MIVIRenderTag for a given camera filterId,
@@ -41,6 +47,7 @@ final class ParamProbe {
     void install(ClassLoader loader) {
         installTag(loader);
         installFilterProcessorProbe(loader);
+        installJavaFilterRouting(loader);
         try {
             Class<?> candy = Class.forName(CANDY, false, loader);
             Method target = null;
@@ -128,6 +135,47 @@ final class ParamProbe {
             module.log(Log.INFO, TAG, "probing FilterProcessor di.g.a (read only)");
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "cannot probe FilterProcessor di.g.a: " + t);
+        }
+    }
+
+    // Experimental opt-in routing: forces MIVI3 to hand YUV to Java ImageProcessor -> di.g.a
+    // instead of encoding a HAL-filtered HEIC directly, and skips sending applyMIVIRenderType
+    // to the HAL so the YUV frame arrives unfiltered.
+    private void installJavaFilterRouting(ClassLoader loader) {
+        if (!config.cameraJavaFilter()) {
+            return;
+        }
+        try {
+            Class<?> sdkCfg = Class.forName("com.xiaomi.camera.mivi.MIVISDKConfig", false, loader);
+            Method m = sdkCfg.getDeclaredMethod("isSupportMIVI3OutputJpeg");
+            module.hook(m).intercept(chain -> {
+                if (config.cameraJavaFilter()) {
+                    if (jpegBypassLogged.compareAndSet(false, true)) {
+                        module.log(Log.INFO, TAG, "isSupportMIVI3OutputJpeg() -> false (experimental)");
+                    }
+                    return Boolean.FALSE;
+                }
+                return chain.proceed();
+            });
+            module.log(Log.INFO, TAG, "hooked MIVISDKConfig.isSupportMIVI3OutputJpeg (experimental)");
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "cannot hook isSupportMIVI3OutputJpeg: " + t);
+        }
+        try {
+            Class<?> z0 = Class.forName("n9.z0", false, loader);
+            Method l1 = z0.getDeclaredMethod("L1", CaptureRequest.Builder.class);
+            module.hook(l1).intercept(chain -> {
+                if (config.cameraJavaFilter()) {
+                    if (halTagBypassLogged.compareAndSet(false, true)) {
+                        module.log(Log.INFO, TAG, "n9.z0.L1 skipped (applyMIVIRenderType off)");
+                    }
+                    return null;
+                }
+                return chain.proceed();
+            });
+            module.log(Log.INFO, TAG, "hooked n9.z0.L1 (skip HAL filter tag, experimental)");
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "cannot hook n9.z0.L1: " + t);
         }
     }
 

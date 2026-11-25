@@ -67,7 +67,7 @@ final class CameraFeatures {
     CameraFeatures(XposedModule module, Config config) {
         this.module = module;
         this.config = config;
-        this.probe = new ParamProbe(module);
+        this.probe = new ParamProbe(module, config);
     }
 
     void install(String stage, ClassLoader loader) {

@@ -37,6 +37,10 @@ final class Config {
         return id < 1 || id > 0xFFFF ? Settings.CAMERA_FILTER_DEFAULT : id;
     }
 
+    boolean cameraJavaFilter() {
+        return bool(Settings.CAMERA_JAVA_FILTER, Settings.CAMERA_JAVA_FILTER_DEFAULT);
+    }
+
     private boolean bool(String key, boolean fallback) {
         SharedPreferences p = prefs();
         try {
