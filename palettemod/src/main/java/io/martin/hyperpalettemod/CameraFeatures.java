@@ -2,6 +2,7 @@ package io.martin.hyperpalettemod;
 
 import android.app.Application;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.media.Image;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
@@ -16,6 +17,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.util.Locale;
 import java.util.concurrent.Executors;
@@ -195,6 +197,102 @@ final class CameraFeatures {
             module.log(Log.INFO, TAG, "hooked TaskDataStorageWriter (v7.j.b)");
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "cannot hook TaskDataStorageWriter (v7.j.b): " + t);
+        }
+        try {
+            Class<?> storage = Class.forName("n7.M", false, loader);
+            Method openOut = storage.getDeclaredMethod("x", String.class, Context.class, Uri.class);
+            module.hook(openOut).intercept(chain -> {
+                Object result = chain.proceed();
+                int mode = config.cameraMode();
+                Object pathObj = chain.getArg(0);
+                if (mode != Settings.MODE_OFF && result instanceof OutputStream realOut
+                        && pathObj instanceof String path
+                        && path.toLowerCase(Locale.ROOT).endsWith(".heic")) {
+                    return new BufferedHeicOutputStream(realOut, mode, path);
+                }
+                return result;
+            });
+            module.log(Log.INFO, TAG, "hooked Storage.openOutputStream (n7.M.x)");
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "cannot hook Storage.openOutputStream (n7.M.x): " + t);
+        }
+        try {
+            Class<?> storage = Class.forName("n7.M", false, loader);
+            Method writeBuf = storage.getDeclaredMethod("B", String.class, ByteBuffer.class);
+            module.hook(writeBuf).intercept(chain -> {
+                int mode = config.cameraMode();
+                Object pathObj = chain.getArg(0);
+                Object bufObj = chain.getArg(1);
+                if (mode != Settings.MODE_OFF && pathObj instanceof String path
+                        && path.toLowerCase(Locale.ROOT).endsWith(".heic")
+                        && bufObj instanceof ByteBuffer bb) {
+                    ByteBuffer dup = bb.duplicate();
+                    byte[] orig = new byte[dup.remaining()];
+                    dup.get(orig);
+                    try {
+                        byte[] injected = addToBytes(orig, mode, "Storage.B (" + path + ")");
+                        if (injected != null) {
+                            return chain.proceed(new Object[]{path, ByteBuffer.wrap(injected)});
+                        }
+                    } catch (Throwable t) {
+                        module.log(Log.WARN, TAG, "Storage.B hook failed, saving original: " + t);
+                    }
+                }
+                return chain.proceed();
+            });
+            module.log(Log.INFO, TAG, "hooked Storage.writeByteBuffer (n7.M.B)");
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "cannot hook Storage.writeByteBuffer (n7.M.B): " + t);
+        }
+    }
+
+    private final class BufferedHeicOutputStream extends OutputStream {
+        private final OutputStream delegate;
+        private final int mode;
+        private final String path;
+        private final ByteArrayOutputStream buffer = new ByteArrayOutputStream(4 * 1024 * 1024);
+        private boolean closed;
+
+        BufferedHeicOutputStream(OutputStream delegate, int mode, String path) {
+            this.delegate = delegate;
+            this.mode = mode;
+            this.path = path;
+        }
+
+        @Override
+        public void write(int b) {
+            buffer.write(b);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) {
+            buffer.write(b, off, len);
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            try {
+                byte[] orig = buffer.toByteArray();
+                byte[] outBytes = orig;
+                if (orig.length > 0) {
+                    try {
+                        byte[] injected = addToBytes(orig, mode, "Storage.x (" + path + ")");
+                        if (injected != null) {
+                            outBytes = injected;
+                        }
+                    } catch (Throwable t) {
+                        module.log(Log.WARN, TAG, "Storage.x hook failed, saving original: " + t);
+                    }
+                }
+                delegate.write(outBytes);
+                delegate.flush();
+            } finally {
+                delegate.close();
+            }
         }
     }
 

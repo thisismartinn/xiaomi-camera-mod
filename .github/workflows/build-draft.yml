@@ -42,7 +42,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.3.0-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.3.1-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -69,10 +69,9 @@ jobs:
           cat > notes.md <<'EOF'
           **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
 
-          **New in 0.3.0:**
-          - **Direct save hook (`TaskDataStorageWriter` / `v7.j.b`):** Intercepts the HEIC stream *before* it is written to disk so the filtered outer HEIC + stripped `Exif` + `edit` (unfiltered source + live Palette) is saved on the very first write—fixing Camera thumbnail, Gallery grid thumbnail, and Gallery full-screen view immediately with no force-restart needed!
-          - **Streamlined Settings UI:** Fixes top inset clipping under the app bar, removes the duplicate header and outdated Planned section, and simplifies toggles/text.
+          **New in 0.3.1:**
+          - Hooks `Storage.openOutputStream` (`n7.M.x`) and `Storage.writeByteBuffer` (`n7.M.B`) directly so **every** HEIC save path in `com.android.camera` writes the filtered outer HEIC + re-edit data on the very first write (eliminating the `FileObserver` race with Camera/Gallery thumbnails and full-screen previews).
           EOF
-          gh release create "draft-v0.3.0.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.3.1.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.3.0 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.3.1 (Media Editor + Camera)" --notes-file notes.md
