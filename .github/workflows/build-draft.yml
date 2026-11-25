@@ -4,7 +4,7 @@ name: Build draft release (HyperPaletteMod)
 # draft is opened and published by hand. Older drafts made by this workflow are replaced.
 on:
   push:
-    branches: ["claude/intelligent-darwin-aioit5"]
+    branches: ["palette-mod"]
     paths:
       - "palettemod/**"
       - "settings.gradle.kts"
