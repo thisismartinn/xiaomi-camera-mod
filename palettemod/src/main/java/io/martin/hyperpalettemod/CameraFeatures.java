@@ -244,6 +244,49 @@ final class CameraFeatures {
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "cannot hook Storage.writeByteBuffer (n7.M.B): " + t);
         }
+        try {
+            Class<?> storage = Class.forName("n7.M", false, loader);
+            Method saveJ = null;
+            for (Method m : storage.getDeclaredMethods()) {
+                Class<?>[] p = m.getParameterTypes();
+                if (m.getName().equals("J") && p.length == 9 && p[3] == ByteBuffer.class) {
+                    saveJ = m;
+                    break;
+                }
+            }
+            if (saveJ == null) {
+                throw new NoSuchMethodException("n7.M.J(..., ByteBuffer, ...)");
+            }
+            module.hook(saveJ).intercept(chain -> {
+                int mode = config.cameraMode();
+                Object bufObj = chain.getArg(3);
+                if (mode != Settings.MODE_OFF && bufObj instanceof ByteBuffer bb) {
+                    ByteBuffer dup = bb.duplicate();
+                    byte[] orig = new byte[dup.remaining()];
+                    dup.get(orig);
+                    if (ReEditInjector.isHeic(orig)) {
+                        try {
+                            byte[] injected = addToBytes(orig, mode, "Storage.J");
+                            if (injected != null) {
+                                Object[] args = new Object[9];
+                                for (int i = 0; i < 9; i++) {
+                                    args[i] = chain.getArg(i);
+                                }
+                                args[3] = ByteBuffer.wrap(injected);
+                                return chain.proceed(args);
+                            }
+                        } catch (Throwable t) {
+                            module.log(Log.WARN, TAG, "Storage.J hook failed, saving original: "
+                                    + t);
+                        }
+                    }
+                }
+                return chain.proceed();
+            });
+            module.log(Log.INFO, TAG, "hooked Storage.J (n7.M.J ByteBuffer save)");
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "cannot hook Storage.J (n7.M.J): " + t);
+        }
     }
 
     private final class BufferedHeicOutputStream extends OutputStream {

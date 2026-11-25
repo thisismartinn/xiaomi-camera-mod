@@ -42,7 +42,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.3.1-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.3.2-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -69,9 +69,9 @@ jobs:
           cat > notes.md <<'EOF'
           **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
 
-          **New in 0.3.1:**
-          - Hooks `Storage.openOutputStream` (`n7.M.x`) and `Storage.writeByteBuffer` (`n7.M.B`) directly so **every** HEIC save path in `com.android.camera` writes the filtered outer HEIC + re-edit data on the very first write (eliminating the `FileObserver` race with Camera/Gallery thumbnails and full-screen previews).
+          **New in 0.3.2:**
+          - Hooks `n7.M.J(Application, Uri, String, ByteBuffer, ...)` — the actual `FileChannel` `ByteBuffer` writer used by MIVI3 HEIC captures on 17 Ultra — so the filtered outer HEIC + re-edit data is written directly on first save before Camera or Gallery ever sees an unfiltered file.
           EOF
-          gh release create "draft-v0.3.1.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.3.2.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.3.1 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.3.2 (Media Editor + Camera)" --notes-file notes.md
