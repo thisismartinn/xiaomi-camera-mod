@@ -55,7 +55,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.3.7-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.3.8-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -82,11 +82,9 @@ jobs:
           cat > notes.md <<'EOF'
           **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
 
-          **New in 0.3.7:**
-          - Drops the `transition=true` requirement in `A4.v1.v0` (17U passes `transition=false` on shutter) and uses a one-shot `consumeThumbStyle` so each filtered capture filters its shutter thumbnail in-place immediately without affecting startup thumbnails.
-          - Defaults **"Render filtered outer photo"** (`CAMERA_JAVA_FILTER`) to ON so fresh installs work out of the box.
-          - Supports persistent release signing via GitHub Actions secrets + auto-incrementing `versionCode` for in-place updates.
+          **New in 0.3.8:**
+          - Eliminates the duplicate `OuterRenderer` pass per shot by raising the `FileObserver` fallback delay from 400 ms to 2500 ms, so it skips the temporary MIVI3 placeholder HEIC and lets `Storage.J` (`n7.M.J`) handle the final photo once.
           EOF
-          gh release create "draft-v0.3.7.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.3.8.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.3.7 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.3.8 (Media Editor + Camera)" --notes-file notes.md

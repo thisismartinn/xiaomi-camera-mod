@@ -584,7 +584,7 @@ final class CameraFeatures {
                 public void onEvent(int event, String name) {
                     if (name != null && name.toLowerCase(Locale.ROOT).endsWith(".heic")) {
                         File file = new File(dir, name);
-                        executor.schedule(() -> addToFile(file), 400, TimeUnit.MILLISECONDS);
+                        executor.schedule(() -> addToFile(file), 2500, TimeUnit.MILLISECONDS);
                     }
                 }
             };
