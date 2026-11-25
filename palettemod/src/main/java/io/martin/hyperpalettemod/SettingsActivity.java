@@ -56,18 +56,19 @@ public class SettingsActivity extends Activity {
         scroll.setOnApplyWindowInsetsListener((view, insets) -> {
             android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars()
                     | WindowInsets.Type.displayCutout());
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            TypedValue tv = new TypedValue();
+            int barHeight = getTheme().resolveAttribute(android.R.attr.actionBarSize, tv, true)
+                    ? TypedValue.complexToDimensionPixelSize(tv.data,
+                    getResources().getDisplayMetrics()) : 0;
+            view.setPadding(bars.left, bars.top + barHeight, bars.right, bars.bottom);
             return insets;
         });
 
-        root.addView(label("HyperPaletteMod", 24, true));
-        root.addView(note("Palette for the Media Editor and the Camera. Draft."));
-
         status = note("");
-        status.setPadding(0, dp(12), 0, dp(4));
+        status.setPadding(0, dp(4), 0, dp(4));
         root.addView(status);
         scopeButton = new Button(this);
-        scopeButton.setText("Add Camera and Media Editor to the scope");
+        scopeButton.setText("Add Camera and Media Editor to scope");
         scopeButton.setAllCaps(false);
         scopeButton.setOnClickListener(v -> requestScope());
         scopeButton.setVisibility(View.GONE);
@@ -75,20 +76,23 @@ public class SettingsActivity extends Activity {
 
         // ---- Media Editor ----
         root.addView(section("Media Editor"));
-        padSwitch = switchRow(root, "Open the Palette pad on this phone",
-                "The editor opens its Saturation and Tone pad only on the 18 series. This lets it "
-                        + "open here too. Applies the next time the Media Editor starts.",
+        padSwitch = switchRow(root, "Enable Palette pad",
+                "Unlocks the Saturation & Tone pad on this device.",
                 Settings.EDITOR_PAD);
-        widthSwitch = switchRow(root, "Keep the pad's numbers on one line",
-                "Stops values such as 20 or -44 from wrapping onto two lines in this phone's font.",
+        widthSwitch = switchRow(root, "Single-line pad values",
+                "Prevents two-digit numbers from wrapping.",
                 Settings.EDITOR_WIDTH);
 
         // ---- Camera ----
         root.addView(section("Camera"));
-        root.addView(label("Add re-edit data to saved HEIC photos", 16, false));
+        javaFilterSwitch = switchRow(root, "Non-destructive Palette re-edit",
+                "Saves the unfiltered source + live Palette values. Force-stop Camera after changing.",
+                Settings.CAMERA_JAVA_FILTER);
+
+        root.addView(label("HEIC re-edit data", 16, false));
         modeGroup = new RadioGroup(this);
         modeGroup.setOrientation(RadioGroup.VERTICAL);
-        String[] modeLabels = {"Off", "Photos taken with a filter", "Every photo"};
+        String[] modeLabels = {"Off", "Filtered photos", "Every photo"};
         for (int i = 0; i < modeLabels.length; i++) {
             RadioButton button = new RadioButton(this);
             button.setText(modeLabels[i]);
@@ -108,16 +112,20 @@ public class SettingsActivity extends Activity {
             }
         });
         root.addView(modeGroup);
-        root.addView(note("Gives the editor what it needs to open the Palette pad on the photo. This "
-                + "phone's camera does not keep the unfiltered picture, so the photo itself is the "
-                + "source and the pad starts at 0. Photos roughly double in size. Applies from the "
-                + "next photo."));
+        root.addView(note("Embeds re-edit metadata into saved HEICs."));
 
-        root.addView(label("Editor filter id", 16, false));
+        LinearLayout filterRow = new LinearLayout(this);
+        filterRow.setOrientation(LinearLayout.HORIZONTAL);
+        filterRow.setGravity(Gravity.CENTER_VERTICAL);
+        filterRow.setPadding(0, dp(10), 0, dp(2));
+        TextView filterTitle = label("Fallback filter ID", 16, false);
+        filterRow.addView(filterTitle, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         filterField = new EditText(this);
         filterField.setInputType(InputType.TYPE_CLASS_NUMBER);
         filterField.setImeOptions(EditorInfo.IME_ACTION_DONE);
         filterField.setSingleLine(true);
+        filterField.setGravity(Gravity.END);
         filterField.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_DONE) {
                 saveFilter();
@@ -131,24 +139,10 @@ public class SettingsActivity extends Activity {
             }
         });
         controls.add(filterField);
-        root.addView(filterField, new LinearLayout.LayoutParams(dp(120),
+        filterRow.addView(filterField, new LinearLayout.LayoutParams(dp(80),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(note("The editor filter the added data names (" + Settings.CAMERA_FILTER_DEFAULT
-                + " by default), shown selected at 0 % so it does not change the picture."));
-
-        javaFilterSwitch = switchRow(root, "Route filter through Java (experimental)",
-                "Turns off MIVI3 JPEG output and the HAL filter tag so Java FilterProcessor "
-                        + "(di.g.a) can receive the unfiltered frame. Force-stop Camera after "
-                        + "changing.",
-                Settings.CAMERA_JAVA_FILTER);
-
-        // ---- planned ----
-        root.addView(section("Planned"));
-        root.addView(note("Save the camera's own filter and Palette values so the editor can re-edit "
-                + "them. That needs the unfiltered picture, which is still being investigated; it "
-                + "is not available yet."));
-        root.addView(note("Open the original photo from the phone (copy it off by cable). Chat apps "
-                + "and an iPhone remove the added data."));
+        root.addView(filterRow);
+        root.addView(note("Used only if a filter ID isn't detected automatically."));
     }
 
     @Override

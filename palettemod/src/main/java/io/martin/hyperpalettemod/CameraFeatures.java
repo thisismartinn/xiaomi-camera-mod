@@ -9,6 +9,7 @@ import android.os.Environment;
 import android.os.FileObserver;
 import android.util.Log;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -76,6 +77,7 @@ final class CameraFeatures {
         }
         installWatcher();
         probe.install(loader);
+        installWriterHook(loader);
         for (SaveProfile profile : SAVE_PROFILES) {
             int hooks = 0;
             try {
@@ -157,6 +159,42 @@ final class CameraFeatures {
                         + profile.name() + "; mode " + config.cameraMode() + ")");
                 return;
             }
+        }
+    }
+
+    // Intercepts TaskDataStorageWriter.writeTo(OutputStream) (v7.j.b in Camera 6.7.000500.0) so
+    // the filtered + re-edit HEIC is written to disk on the very first save—before Camera or
+    // Gallery ever reads or caches an unfiltered thumbnail or full-screen preview.
+    private void installWriterHook(ClassLoader loader) {
+        try {
+            Class<?> writer = Class.forName("v7.j", false, loader);
+            Method writeTo = writer.getDeclaredMethod("b", OutputStream.class);
+            module.hook(writeTo).intercept(chain -> {
+                int mode = config.cameraMode();
+                Object arg0 = chain.getArg(0);
+                if (mode == Settings.MODE_OFF || !(arg0 instanceof OutputStream realOut)) {
+                    return chain.proceed();
+                }
+                ByteArrayOutputStream buf = new ByteArrayOutputStream(4 * 1024 * 1024);
+                Object result = chain.proceed(new Object[]{buf});
+                byte[] orig = buf.toByteArray();
+                byte[] outBytes = orig;
+                if (orig.length > 0) {
+                    try {
+                        byte[] injected = addToBytes(orig, mode, "writer v7.j.b");
+                        if (injected != null) {
+                            outBytes = injected;
+                        }
+                    } catch (Throwable t) {
+                        module.log(Log.WARN, TAG, "writer hook failed, saving original: " + t);
+                    }
+                }
+                realOut.write(outBytes);
+                return result;
+            });
+            module.log(Log.INFO, TAG, "hooked TaskDataStorageWriter (v7.j.b)");
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "cannot hook TaskDataStorageWriter (v7.j.b): " + t);
         }
     }
 
