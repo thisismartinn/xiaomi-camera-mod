@@ -4,7 +4,7 @@ Two LSPosed/Vector modules (libxposed API 101-102) for the Xiaomi Camera on Hype
 
 | Module | What it does | Package |
 | ------ | ------------ | ------- |
-| [HyperFilmFilters](app/README.md) | Brings the film filters R600, P100F, F-50 and KC64 (and KP160 in the Leica UI) back to the filter panel and the filter strip, in the standard UI and the Leica UI. | `io.martin.hyperfilters` |
+| [HyperFilmFilters](app/README.md) | Brings all twelve film filters (600F, BF70, R600, P100F, F-50, KC64, V250, H400, KP160, FC400, C-50D, KG200) back to the filter panel and the filter strip, in the standard UI and the Leica UI. | `io.martin.hyperfilters` |
 | [HyperCameraMod](cameramod/README.md) | Turns on three features the camera already contains: the Palette and Parameters panel, the Original colour style, and the Leica Essential CMOS style. | `io.martin.hypercameramod` |
 
 Both are developed and tested on the Xiaomi 17 Ultra (Leica edition) with Xiaomi Camera 6.7 on HyperOS 4. They do not check the camera's version number: they look for what they need and, when it is not there, leave the camera unchanged and say so. Each module's README lists what it looks for.

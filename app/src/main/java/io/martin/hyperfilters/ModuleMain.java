@@ -7,7 +7,6 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.BitmapFactory;
 import android.graphics.RectF;
 import android.graphics.ColorFilter;
 import android.graphics.PixelFormat;
@@ -17,7 +16,6 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.VectorDrawable;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.Base64;
 import android.util.Log;
 import android.widget.ImageView;
 import android.widget.Toast;
@@ -40,6 +38,8 @@ public class ModuleMain extends XposedModule {
     private static final String TAG = "HyperFilmFilters";
     private static final String CAMERA_PACKAGE = "com.android.camera";
     private static final int PHOTO_CATEGORY = 10;
+    // The visible filter strip on some builds asks for category 5; it must get the films too.
+    private static final int STRIP_CATEGORY = 5;
 
     // Where the camera keeps its filter code. The camera is obfuscated, so the names change from
     // build to build; a profile is one known layout. The module tries each profile in turn and
@@ -49,10 +49,12 @@ public class ModuleMain extends XposedModule {
             String name,
             // Builds the photo filter list (category 10) as a list of items.
             String listClass, String listMethod,
-            // The filter item and its fields: filter ordinal, cloud id, icon, name icon,
-            // sample images, sample labels, description.
-            String itemClass, String ordinalField, String cloudField, String iconField,
-            String nameIconField, String samplesField, String labelsField, String descField,
+            // The filter item and its fields: filter ordinal, cloud id, display-name string,
+            // icon, name icon, sample images, sample labels, description. The constructor stores
+            // its 3rd argument (the name) in titleField and its 4th (the image) in iconField.
+            String itemClass, String ordinalField, String cloudField, String titleField,
+            String iconField, String nameIconField, String samplesField, String labelsField,
+            String descField,
             // The camera's resource id classes (strings, images). Optional: when missing the
             // ids are looked up by name instead.
             String stringIds, String imageIds,
@@ -79,7 +81,7 @@ public class ModuleMain extends XposedModule {
     private static final Profile[] PROFILES = {
             // Camera 6.7.000280.0 (HyperOS 4.0.5.0).
             new Profile("6.7", "Ii.i0", "d",
-                    "j3.b", "b", "l", "e", "d", "g", "h", "i",
+                    "j3.b", "b", "l", "c", "e", "d", "g", "h", "i",
                     "Di.p", "Di.n",
                     "com.android.camera.fragment.m0", "ut",
                     "E9.h", "c",
@@ -88,58 +90,109 @@ public class ModuleMain extends XposedModule {
             // Camera 6.7.000500.0: the filter list, item and registry are as above; the filter
             // panel, the Looks table and the strip's workspace and item moved to other classes.
             new Profile("6.7.000500", "Ii.i0", "d",
-                    "j3.b", "b", "l", "e", "d", "g", "h", "i",
+                    "j3.b", "b", "l", "c", "e", "d", "g", "h", "i",
                     "Di.p", "Di.n",
                     "com.android.camera.fragment.j0", "Bt",
                     "E9.i", "c",
                     "com.android.camera.features.mode.capture.d", "M", "Y", "G",
                     "h2.a", "a", "x", "s2.t", "Ei.q", "b", "com.xiaomi.camera.effect.EffectController", "q"),
+            // Camera 6.8.002230.0 (HyperOS 4). imageIds is null: drawables are resolved by name.
+            new Profile("6.8.002230", "xi.h0", "d",
+                    "i3.b", "b", "l", "c", "e", "d", "g", "h", "i",
+                    "com.xiaomi.camera.cloudfilter.R$string", null,
+                    "com.android.camera.fragment.j0", "kt",
+                    "B9.j", "c",
+                    "com.android.camera.features.mode.capture.d", "K", "Y", "G",
+                    "g2.a", "a", "x", "r2.t", "ti.f", "b", "com.xiaomi.camera.effect.EffectController", "q"),
     };
 
     // ic_vector_lc_looks_filter_name_icon_standard in 6.7.000280.0 (no R classes at runtime).
     private static final int LOOKS_NAME_ICON = 0x7f0808f5;
 
     // ordinal = position of the filter in the camera's filter enum (p3.d), order = sort slot,
-    // cloudId = the id the camera's own item builder gives the same filter.
-    private record Film(int ordinal, String label, String stringId, String imageId, int order,
-                        int cloudId) {
+    // cloudId = the id the camera's own item builder / cloud catalogue gives the filter.
+    //
+    // codeStringId is the pre-6.7 film-code string resource (600F, KC64, ...). stockStringId is
+    // the key the running camera uses for the same filter; on 6.7/6.8 many films were renamed
+    // (F-50 -> reversal, KC64 -> hanjiao, V250 -> besson, H400 -> freehand_brushwork,
+    // KP160 -> monsoon, FC400 -> jingdu, C-50D -> old_roadway, KG200 -> slack). Both keys are
+    // used to recognise an entry that is already in the camera's list, so it can be renamed
+    // instead of added twice.
+    private record Film(int ordinal, String label, String codeStringId, String stockStringId,
+                        String imageId, int order, int cloudId) {
     }
 
-    private static final Film[] FILMS = {
-            new Film(81, "R600", "color_effect_entry_r_600", "color_effect_image_r_600", 14, 56),
-            new Film(82, "P100F", "color_effect_entry_p_100f", "color_effect_image_p_100f", 15, 57),
-            new Film(83, "F-50", "color_effect_entry_reversal", "color_effect_image_f_50", 16, 46),
-            new Film(84, "KC64", "color_effect_entry_hanjiao", "color_effect_image_c_64", 17, 38),
+    // Every film stock the 5.3 back-camera strip had, in the 6.7/6.8 strip order (12..23).
+    // The labels are the film codes, and the module always draws these labels, even on a
+    // camera version whose own UI uses the later artistic names.
+    private static final Film[] ALL_FILMS = {
+            new Film(79, "600F", "color_effect_entry_600_f", "color_effect_entry_600_f",
+                    "color_effect_image_600_f", 12, 11),
+            new Film(80, "BF70", "color_effect_entry_bf_70", "color_effect_entry_bf_70",
+                    "color_effect_image_bf_70", 13, 12),
+            new Film(81, "R600", "color_effect_entry_r_600", "color_effect_entry_r_600",
+                    "color_effect_image_r_600", 14, 56),
+            new Film(82, "P100F", "color_effect_entry_p_100f", "color_effect_entry_p_100f",
+                    "color_effect_image_p_100f", 15, 57),
+            new Film(83, "F-50", "color_effect_entry_f_50", "color_effect_entry_reversal",
+                    "color_effect_image_f_50", 16, 46),
+            new Film(84, "KC64", "color_effect_entry_kc_64", "color_effect_entry_hanjiao",
+                    "color_effect_image_c_64", 17, 38),
+            new Film(85, "V250", "color_effect_entry_v_250", "color_effect_entry_besson",
+                    "color_effect_image_v_5207", 18, 15),
+            new Film(86, "H400", "color_effect_entry_h_400", "color_effect_entry_freehand_brushwork",
+                    "color_effect_image_h_400", 19, 16),
+            new Film(87, "KP160", "color_effect_entry_kp_160", "color_effect_entry_monsoon",
+                    "color_effect_image_p_160nc", 20, 58),
+            new Film(88, "FC400", "color_effect_entry_fc_400", "color_effect_entry_jingdu",
+                    "color_effect_image_p_400h", 21, 59),
+            new Film(89, "C-50D", "color_effect_entry_c_50d", "color_effect_entry_old_roadway",
+                    "color_effect_image_c_50d", 22, 70),
+            new Film(90, "KG200", "color_effect_entry_kg_200", "color_effect_entry_slack",
+                    "color_effect_image_g_200", 23, 69),
     };
 
-    // The Leica Looks list names the filters by their film codes, and does not list KP160.
-    private static final Film[] LOOKS_FILMS = {
-            new Film(81, "R600", "color_effect_entry_r_600", "color_effect_image_r_600", 14, 56),
-            new Film(82, "P100F", "color_effect_entry_p_100f", "color_effect_image_p_100f", 15, 57),
-            new Film(83, "F-50", "color_effect_entry_f_50", "color_effect_image_f_50", 16, 46),
-            new Film(84, "KC64", "color_effect_entry_kc_64", "color_effect_image_c_64", 17, 38),
-            new Film(87, "KP160", "color_effect_entry_kp_160", "color_effect_image_p_160nc", 18, 58),
+    // The photo strip and the Leica Looks table both get the full set.
+    private static final Film[] FILMS = ALL_FILMS;
+    private static final Film[] LOOKS_FILMS = ALL_FILMS;
+
+    // Camera 6.4 only has the four filters the legacy profile exposed. Its item class and filter
+    // enum predate the full 79..90 range, so the newer entries are not passed to it.
+    private static final Film[] LEGACY_FILMS = {
+            new Film(81, "R600", "color_effect_entry_r_600", "color_effect_entry_r_600",
+                    "color_effect_image_r_600", 9, 56),
+            new Film(82, "P100F", "color_effect_entry_p_100f", "color_effect_entry_p_100f",
+                    "color_effect_image_p_100f", 10, 57),
+            new Film(83, "F-50", "color_effect_entry_f_50", "color_effect_entry_reversal",
+                    "color_effect_image_f_50", 11, 46),
+            new Film(84, "KC64", "color_effect_entry_kc_64", "color_effect_entry_hanjiao",
+                    "color_effect_image_c_64", 12, 38),
     };
 
     // The Looks list draws a small image of each look's name under its thumbnail. There is no
     // such image for the film filters, so the name icon is a made-up resource id (this base plus
-    // the filter ordinal) that ImageView.setImageResource turns into the film's name as text.
+    // the filter ordinal) that ImageView.setImageResource / Resources.getDrawable turns into the
+    // film's name as text.
     private static final int STANDARD_CATEGORY = 2;
     // The camera identifies a filter in its strip by a key made from this field; the films were
     // all left at 0 and so shared one key. Give each its own, clear of the camera's (8 bit) ids.
     private static final int FILM_KEY_BASE = 0x10000;
+    // Made-up resource ids for the film names. The camera asks Resources for the item's string
+    // id, so the hook returns the film code ("600F", "KC64", ...) no matter what name the
+    // running camera version would otherwise use.
+    private static final int FILM_NAME_BASE = 0x7d000000;
     private static final int NAME_ICON_BASE = 0x7e000000;
     // Same coordinate system as the camera's own name icons (36 dp square), so the label is drawn
     // at the same size wherever the icon is used. Letter height and stroke are those of the
     // native "LEICA" line as measured on screen (26 px tall, 4 px stroke, letters 3-4 px apart,
     // 5 px between the two lines, at about 2.65 px per dp).
     private static final float LABEL_SIZE_DP = 36f;
-    private static final float LABEL_CAP_DP = 9.45f;
-    private static final float LABEL_GAP_DP = 1.05f;    // gap between the letters of the top line, as native
-    private static final float LABEL_NAME_GAP_DP = 1.25f; // same for the film code: its letters sat tighter than native
-    private static final float LABEL_LINE_GAP_DP = 2.25f; // gap between the two lines (31 px pitch at 2.65 px/dp), as native
+    private static final float LABEL_CAP_DP = 9.7f;
+    private static final float LABEL_GAP_DP = 0.9f;    // gap between the letters of the top line, as native
+    private static final float LABEL_NAME_GAP_DP = 1.2f; // same for the film code: its letters sat tighter than native
+    private static final float LABEL_LINE_GAP_DP = 2.3f; // gap between the two lines (31 px pitch at 2.65 px/dp), as native
     private static final float LABEL_BLOCK_SHIFT_DP = -0.4f; // moves both lines up, as native (outer edges incl. the ring)
-    private static final float LABEL_GLYPH_HEIGHT_DP = 9.1f; // letter height; the widths stay those of LABEL_CAP_DP
+    private static final float LABEL_GLYPH_HEIGHT_DP = 9.7f; // letter height; the widths stay those of LABEL_CAP_DP
     // The native labels have a light gray outline around the letters (about 1.75 px at 2.65 px per
     // dp): white letters keep a gray rim on a bright background, and gray (unselected) letters get
     // that much heavier. The outline is not tinted, only the letters are.
@@ -148,20 +201,27 @@ public class ModuleMain extends XposedModule {
     // out as the light gray of the native labels (#C1C1C1), and over a dark panel it is hardly
     // visible, as on the native labels.
     private static final int LABEL_RING_ALPHA = 56;
+    private static final Paint FALLBACK_MEASURE = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final String LABEL_TOP_LINE = "FLM";
     private static final float HYPHEN_LENGTH = 0.5f;    // hyphen length, as a share of letter height
-    private static final Map<Character, Bitmap> GLYPH_CACHE = new HashMap<>();
 
     private final Set<String> loggedCategories = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private volatile boolean hooked;
     private volatile boolean nameIconHooked;
+    private volatile boolean nameHooksInstalled;
+    private volatile boolean nameStringHooked;
     // What did not work, shown to the user once per camera version (see scheduleNotice).
     private final List<String> problems = new CopyOnWriteArrayList<>();
     private final AtomicBoolean noticeScheduled = new AtomicBoolean();
 
     // What a profile resolved to on the running camera.
     private record Resolved(Profile profile, Constructor<?> create, Field ordinal, Field cloud,
-                            Class<?> strings, Class<?> images) {
+                            Field name, Class<?> strings, Class<?> images) {
+    }
+
+    // The entries a film pass touched: all film entries (existing ones that were renamed and new
+    // ones that were added), plus the subset that was newly created.
+    private record FilmResult(List<Object> touched, List<Object> created) {
     }
 
     @Override
@@ -193,6 +253,9 @@ public class ModuleMain extends XposedModule {
                 trace(stage + ": layout " + profile.name() + " does not match: " + t);
                 continue;
             }
+            // Install the name hooks before the list hook: the items added below carry made-up
+            // string/icon ids, and the camera may ask for them as soon as its list is built.
+            installNameIconHook();
             try {
                 hook(listMethod(profile, loader)).intercept(chain -> {
                     Object result = chain.proceed();
@@ -210,7 +273,6 @@ public class ModuleMain extends XposedModule {
             log(Log.INFO, TAG, stage + ": camera layout " + profile.name() + ", hooked "
                     + profile.listClass() + "." + profile.listMethod());
             installPanelHook(profile, loader);
-            installNameIconHook();
             installLooksHook(profile, loader, resolved);
             installCategoryHook(profile, loader, resolved);
             installComponentHook(loader, resolved);
@@ -244,11 +306,29 @@ public class ModuleMain extends XposedModule {
             create.setAccessible(true);
             Field category = field(item, "a");
             Field ordinal = field(item, "b");
-            Class<?> strings = Class.forName("Z9.f", false, loader);
+            // The camera's string-id class is R8-renamed per build (Z9.f on the 14 Ultra's
+            // 6.4.000430.0, something else on other builds of the same version). The cloudfilter
+            // R class is not obfuscated and exists with the same color_effect_entry_* fields.
+            Class<?> strings = null;
+            for (String name : new String[]{"Z9.f", "com.xiaomi.camera.cloudfilter.R$string"}) {
+                try {
+                    strings = Class.forName(name, false, loader);
+                    break;
+                } catch (ClassNotFoundException ignored) {
+                }
+            }
+            if (strings == null) {
+                throw new ClassNotFoundException("Z9.f / com.xiaomi.camera.cloudfilter.R$string");
+            }
+            trace(stage + ": string ids from " + strings.getName());
+            final Class<?> stringsClass = strings;
             // The camera has no class for its image ids (they are inlined), so the images are
             // looked up by name when the lists are built.
-            for (Film film : FILMS) {
-                strings.getField(film.stringId());
+            for (Film film : LEGACY_FILMS) {
+                if (resourceIdSafe(stringsClass, film.stockStringId()) == 0
+                        && resourceIdSafe(stringsClass, film.codeStringId()) == 0) {
+                    throw new NoSuchFieldException(film.stockStringId());
+                }
             }
             hook(lists).intercept(chain -> {
                 Object result = chain.proceed();
@@ -260,7 +340,7 @@ public class ModuleMain extends XposedModule {
                     }
                     if (asked instanceof Integer c && (c == LEGACY_CATEGORY
                             || c == LEGACY_PANEL_CATEGORY) && result instanceof List<?> list) {
-                        addLegacyFilms(list, c, create, category, ordinal, strings);
+                        addLegacyFilms(list, c, create, category, ordinal, stringsClass);
                         if (!list.isEmpty()) {
                             debugKeys("filter list category " + c + " (ordinals)", list, ordinal);
                         }
@@ -289,16 +369,36 @@ public class ModuleMain extends XposedModule {
     // out. When the films are missing after that, build it again from the list alone.
     private void installLegacyComponentHook(ClassLoader loader) {
         try {
-            Class<?> cls = Class.forName("f0.M", false, loader);
-            Method build = cls.getDeclaredMethod("mapToCloudItems", int.class, Map.class);
-            Method init = cls.getDeclaredMethod("initItems", int.class);
-            Method items = cls.getMethod("getItems");
+            // The filter component moved between builds of the same camera version: f0.M on the
+            // 14 Ultra's 6.4.000430.0, f0.L on the 14 Pro's. Both expose the same methods, so
+            // pick the first candidate that has them.
+            Class<?> cls = null;
+            Method build = null;
+            Method init = null;
+            Method items = null;
+            for (String name : new String[]{"f0.M", "f0.L"}) {
+                try {
+                    Class<?> candidate = Class.forName(name, false, loader);
+                    build = candidate.getDeclaredMethod("mapToCloudItems", int.class, Map.class);
+                    init = candidate.getDeclaredMethod("initItems", int.class);
+                    items = candidate.getMethod("getItems");
+                    cls = candidate;
+                    break;
+                } catch (Throwable ignored) {
+                }
+            }
+            if (cls == null) {
+                throw new NoSuchMethodException("filter component (f0.M / f0.L)");
+            }
+            final Method componentBuild = build;
+            final Method componentInit = init;
+            final Method componentItems = items;
             Class<?> data = Class.forName("com.android.camera.data.data.d", false, loader);
             Field key = field(data, "p");
-            hook(init).intercept(chain -> {
+            hook(componentInit).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
-                    List<?> built = (List<?>) items.invoke(chain.getThisObject());
+                    List<?> built = (List<?>) componentItems.invoke(chain.getThisObject());
                     log(Log.INFO, TAG, "filter component set up for mode " + chain.getArg(0) + ": "
                             + built.size() + " items, " + countLegacyFilms(built, key) + " films");
                 } catch (Throwable t) {
@@ -306,12 +406,12 @@ public class ModuleMain extends XposedModule {
                 }
                 return result;
             });
-            hook(build).intercept(chain -> {
+            hook(componentBuild).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
                     Object mode = chain.getArg(0);
                     Map<?, ?> cloud = (Map<?, ?>) chain.getArg(1);
-                    List<?> built = (List<?>) items.invoke(chain.getThisObject());
+                    List<?> built = (List<?>) componentItems.invoke(chain.getThisObject());
                     boolean hasCloud = cloud != null && cloud.containsKey(mode);
                     int films = countLegacyFilms(built, key);
                     log(Log.INFO, TAG, "filter component for mode " + mode + ": " + built.size()
@@ -327,9 +427,9 @@ public class ModuleMain extends XposedModule {
                             List<Object> merged = new ArrayList<>(built);
                             Map<Object, Object> local = new java.util.concurrent.ConcurrentHashMap<>(cloud);
                             local.remove(mode);
-                            build.invoke(self, mode, local);
+                            componentBuild.invoke(self, mode, local);
                             int added = 0;
-                            for (Object item : (List<?>) items.invoke(self)) {
+                            for (Object item : (List<?>) componentItems.invoke(self)) {
                                 if (isLegacyFilm(item, key)) {
                                     merged.add(item);
                                     added++;
@@ -348,7 +448,7 @@ public class ModuleMain extends XposedModule {
                 }
                 return result;
             });
-            log(Log.INFO, TAG, "hooked f0.M (filter component)");
+            log(Log.INFO, TAG, "hooked " + cls.getName() + " (filter component)");
         } catch (Throwable t) {
             log(Log.WARN, TAG, "cannot hook the filter component: " + t);
         }
@@ -375,7 +475,7 @@ public class ModuleMain extends XposedModule {
         Object k = key.get(item);
         if (k instanceof String text && text.matches("\\d+")) {
             int ordinal = (int) (Long.parseLong(text) & 0xFFFF);
-            for (Film film : FILMS) {
+            for (Film film : LEGACY_FILMS) {
                 if (film.ordinal() == ordinal) {
                     return true;
                 }
@@ -415,7 +515,7 @@ public class ModuleMain extends XposedModule {
         }
     }
 
-    private static final String MODULE_VERSION = "1.9.2";
+    private static final String MODULE_VERSION = "2.0.0";
 
     // Some frameworks keep the module's own log lines out of logcat (they go to the framework's
     // module log). The key lines are also printed straight to logcat, under the same tag.
@@ -463,7 +563,7 @@ public class ModuleMain extends XposedModule {
             Object k = key.get(item);
             if (k instanceof String text && text.matches("\\d+")) {
                 int ordinal = (int) (Long.parseLong(text) & 0xFFFF);
-                for (Film film : FILMS) {
+                for (Film film : LEGACY_FILMS) {
                     if (film.ordinal() == ordinal) {
                         count++;
                     }
@@ -484,12 +584,15 @@ public class ModuleMain extends XposedModule {
             }
         }
         List<String> added = new ArrayList<>();
-        for (int i = 0; i < FILMS.length; i++) {
-            Film film = FILMS[i];
+        for (int i = 0; i < LEGACY_FILMS.length; i++) {
+            Film film = LEGACY_FILMS[i];
             if (present.contains(film.ordinal())) {
                 continue;
             }
-            int name = resourceId(strings, film.stringId(), "string");
+            int name = resourceIdSafe(strings, film.stockStringId());
+            if (name == 0) {
+                name = resourceId(strings, film.codeStringId(), "string");
+            }
             int image = resourceId(null, film.imageId(), "drawable");
             list.add(create.newInstance("NORMAL", asked, film.ordinal(), name, image,
                     asked == LEGACY_CATEGORY ? LEGACY_ORDER[i] : film.order(), film.cloudId()));
@@ -521,7 +624,8 @@ public class ModuleMain extends XposedModule {
         create.setAccessible(true);
         Field ordinal = field(item, profile.ordinalField());
         Field cloud = field(item, profile.cloudField());
-        return new Resolved(profile, create, ordinal, cloud,
+        Field name = field(item, profile.titleField());
+        return new Resolved(profile, create, ordinal, cloud, name,
                 optionalClass(profile.stringIds(), loader), optionalClass(profile.imageIds(), loader));
     }
 
@@ -532,6 +636,9 @@ public class ModuleMain extends XposedModule {
     }
 
     private static Class<?> optionalClass(String name, ClassLoader loader) {
+        if (name == null) {
+            return null;
+        }
         try {
             return Class.forName(name, false, loader);
         } catch (Throwable t) {
@@ -545,9 +652,9 @@ public class ModuleMain extends XposedModule {
     // order, then the user's own presets. After the strip has reloaded, the module puts it back
     // to that rule, and also once when the camera opens (which repairs a strip an earlier
     // version of the module left in a wrong order).
-    // The strip of the standard UI is built from the camera's filter list for category 2, which
-    // (unlike the list for category 10 above) never got the films. Add them to it as well, where
-    // the camera hands the list out (not where it builds it, one combined list is made from both).
+    // The strip of the standard UI is built from the camera's filter list for category 2 (and
+    // category 5 on some builds), which never got the films. Add them to it as well, where the
+    // camera hands the list out (not where it builds it, one combined list is made from both).
     private void installCategoryHook(Profile profile, ClassLoader loader, Resolved resolved) {
         try {
             Method categoryList = Class.forName(profile.effectClass(), false, loader)
@@ -559,13 +666,16 @@ public class ModuleMain extends XposedModule {
                     log(Log.INFO, TAG, "filter list asked for category " + category + ": "
                             + (result instanceof List<?> l ? l.size() : "none") + " items");
                 }
-                if (category instanceof Integer c && (c == STANDARD_CATEGORY || c == PHOTO_CATEGORY)) {
+                if (category instanceof Integer c
+                        && (c == STANDARD_CATEGORY || c == STRIP_CATEGORY
+                        || c == PHOTO_CATEGORY)) {
                     // The list for category 10 can differ from the one the camera built (000500
-                    // hands out a copy without the films), so check it here too; films already
-                    // in the list are left alone.
-                    List<Object> created = addFilms(result, FILMS, resolved);
-                    if (!created.isEmpty()) {
-                        log(Log.INFO, TAG, "category " + c + ": added " + created.size()
+                    // hands out a copy without the films), so check it here too; entries already
+                    // in the list are renamed, missing ones are added.
+                    FilmResult added = addFilms(result, FILMS, resolved, c);
+                    if (!added.created().isEmpty()) {
+                        log(Log.INFO, TAG, "category " + c + ": added "
+                                + added.created().size()
                                 + " films to the list the camera handed out ("
                                 + ((List<?>) result).size() + " items)");
                     }
@@ -581,7 +691,7 @@ public class ModuleMain extends XposedModule {
 
     // The camera builds its filter component from its local filter list, or, when it holds cloud
     // filter data for the mode, from that data merged with the local list, which leaves the
-    // films out. When the films are missing after that, build it again from the local list.
+    // films out. When any films are missing after that, build it again from the local list.
     private void installComponentHook(ClassLoader loader, Resolved resolved) {
         try {
             Class<?> cls = Class.forName("w2.P", false, loader);
@@ -598,10 +708,16 @@ public class ModuleMain extends XposedModule {
                     log(Log.INFO, TAG, "filter component for " + mode + ": " + built.size()
                             + " items, " + films + " films, cloud data " + hasCloud);
                     if (!built.isEmpty()) {
-                        debugKeys("filter component for mode " + mode, built,
-                                field(built.get(0).getClass(), "n"));
+                        try {
+                            debugKeys("filter component for mode " + mode, built,
+                                    field(built.get(0).getClass(), "n"));
+                        } catch (Throwable ignored) {
+                        }
                     }
-                    if (films == 0 && hasCloud) {
+                    // The cloud-merged component leaves out the local film entries. Rebuilding
+                    // from the local list puts all 12 films in the component, which is what the
+                    // visible strip reads.
+                    if (films < ALL_FILMS.length && hasCloud) {
                         Map<Object, Object> local = new java.util.concurrent.ConcurrentHashMap<>(cloud);
                         local.remove(mode);
                         build.invoke(chain.getThisObject(), mode, local);
@@ -621,19 +737,14 @@ public class ModuleMain extends XposedModule {
     }
 
     // A component filter is a film when its key is one given above or, for a strip saved by an
-    // earlier version, when its name is a film's
-    // How many films a strip holds
+    // earlier version, when its name is a film's.
+    // How many films a strip holds.
     private int stripFilms(Object listObject, Profile profile, Resolved resolved) throws Exception {
         if (!(listObject instanceof List<?> list) || list.isEmpty()) {
             return 0;
         }
         Field data = findField(list.get(0).getClass(), profile.itemDataField());
-        Set<Integer> names = new HashSet<>();
-        for (Film[] group : new Film[][] {FILMS, LOOKS_FILMS}) {
-            for (Film film : group) {
-                names.add(resourceId(resolved.strings(), film.stringId(), "string"));
-            }
-        }
+        Set<Integer> names = filmNameMap(ALL_FILMS, resolved).keySet();
         int count = 0;
         Field title = null;
         for (Object item : list) {
@@ -651,17 +762,25 @@ public class ModuleMain extends XposedModule {
         return count;
     }
 
-    // The film's own sort number (R600, P100F, F-50, KC64, KP160), found by key or by name
-    private static int filmDefaultOrder(Object filter, Field title, Resolved resolved) {
+    // The film's own sort number (600F..KG200), found by key or by display name on a strip item.
+    private static int filmDefaultOrder(Object filter, Field title, Map<Integer, Film> filmNames) {
+        if (filter == null) {
+            return Integer.MAX_VALUE;
+        }
         try {
             Object key = field(filter.getClass(), "r").get(filter);
-            int name = title.getInt(filter);
-            for (Film[] group : new Film[][] {LOOKS_FILMS, FILMS}) {
-                for (Film film : group) {
-                    if (key instanceof String k && k.equals(String.valueOf(FILM_KEY_BASE + film.ordinal()))
-                            || name == resourceId(resolved.strings(), film.stringId(), "string")) {
+            if (key instanceof String k && k.matches("\\d+")) {
+                int value = Integer.parseInt(k);
+                for (Film film : ALL_FILMS) {
+                    if (value == FILM_KEY_BASE + film.ordinal()) {
                         return film.order();
                     }
+                }
+            }
+            if (title != null) {
+                Film film = filmNames.get(title.getInt(filter));
+                if (film != null) {
+                    return film.order();
                 }
             }
         } catch (Throwable ignored) {
@@ -683,10 +802,7 @@ public class ModuleMain extends XposedModule {
     }
 
     private int countFilms(List<?> built, Resolved resolved) throws Exception {
-        Set<Integer> names = new HashSet<>();
-        for (Film film : FILMS) {
-            names.add(resourceId(resolved.strings(), film.stringId(), "string"));
-        }
+        Set<Integer> names = filmNameMap(ALL_FILMS, resolved).keySet();
         int count = 0;
         Field title = null;
         for (Object item : built) {
@@ -799,15 +915,7 @@ public class ModuleMain extends XposedModule {
         Method sortIndex = findMethod(list.get(0).getClass(), profile.sortIndexMethod());
         // The films are the strip items whose name is one of the film names. The user's own order
         // (Manage filters) is kept for everything else; the films go last, in the camera's order.
-        Set<Integer> filmNames = new HashSet<>();
-        for (Film[] group : new Film[][] {FILMS, LOOKS_FILMS}) {
-            for (Film film : group) {
-                try {
-                    filmNames.add(resourceId(resolved.strings(), film.stringId(), "string"));
-                } catch (Throwable ignored) {
-                }
-            }
-        }
+        Map<Integer, Film> filmNames = filmNameMap(ALL_FILMS, resolved);
         Field title = null;
         List<Object> others = new ArrayList<>();
         List<Object> films = new ArrayList<>();
@@ -818,7 +926,7 @@ public class ModuleMain extends XposedModule {
                 if (title == null) {
                     title = field(filter.getClass(), "l");
                 }
-                film = isFilm(filter, title, filmNames);
+                film = isFilm(filter, title, filmNames.keySet());
             }
             (film ? films : others).add(item);
         }
@@ -826,8 +934,9 @@ public class ModuleMain extends XposedModule {
         // films that were already there keep the user's order.
         if (fresh) {
             Field titleField = title;
-            films.sort((a, b) -> Integer.compare(filmDefaultOrder(safeGet(data, a), titleField, resolved),
-                    filmDefaultOrder(safeGet(data, b), titleField, resolved)));
+            films.sort((a, b) -> Integer.compare(
+                    filmDefaultOrder(safeGet(data, a), titleField, filmNames),
+                    filmDefaultOrder(safeGet(data, b), titleField, filmNames)));
         }
         log(Log.INFO, TAG, "films in the strip: " + films.size() + (fresh ? ", new, default order"
                 : ", kept in the user's order"));
@@ -871,8 +980,14 @@ public class ModuleMain extends XposedModule {
                     title = field(filter.getClass(), "l");
                 }
                 int id = title.getInt(filter);
-                String name = id > 0 && app != null
-                        ? app.getResources().getResourceEntryName(id) : "none";
+                String name;
+                if ((id & 0xFFFF0000) == FILM_NAME_BASE) {
+                    name = filmLabel(id & 0xFFFF);
+                } else if (id > 0 && app != null) {
+                    name = app.getResources().getResourceEntryName(id);
+                } else {
+                    name = "none";
+                }
                 tail.append(name).append(' ');
             }
             log(Log.INFO, TAG, "filter strip: " + list.size() + " items, "
@@ -930,6 +1045,11 @@ public class ModuleMain extends XposedModule {
     // there) and, as a shortcut, ImageView.setImageResource. Without the first, the camera
     // throws Resources.NotFoundException when it shows the filter's name in its top banner.
     private void installNameIconHook() {
+        if (nameHooksInstalled) {
+            return;
+        }
+        nameHooksInstalled = true;
+        installNameStringHook();
         try {
             var method = Resources.class.getDeclaredMethod("getDrawable", int.class,
                     Resources.Theme.class);
@@ -961,6 +1081,78 @@ public class ModuleMain extends XposedModule {
             log(Log.INFO, TAG, "hooked ImageView.setImageResource (film name labels)");
         } catch (Throwable t) {
             log(Log.WARN, TAG, "cannot hook ImageView.setImageResource: " + t);
+        }
+    }
+
+    // The film item's name field is a made-up string resource id. Every text path the camera
+    // uses for a filter name is answered here, so the strip and the top banner always show the
+    // film code even when the running camera normally uses artistic names (Reversal, Orchid, ...).
+    private void installNameStringHook() {
+        boolean getString = false;
+        boolean getText = false;
+        try {
+            var method = Resources.class.getDeclaredMethod("getString", int.class);
+            hook(method).intercept(chain -> {
+                int id = (Integer) chain.getArg(0);
+                if ((id & 0xFFFF0000) == FILM_NAME_BASE) {
+                    return filmLabel(id & 0xFFFF);
+                }
+                return chain.proceed();
+            });
+            getString = true;
+            log(Log.INFO, TAG, "hooked Resources.getString (film names)");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot hook Resources.getString: " + t);
+        }
+        try {
+            var method = Resources.class.getDeclaredMethod("getText", int.class);
+            hook(method).intercept(chain -> {
+                int id = (Integer) chain.getArg(0);
+                if ((id & 0xFFFF0000) == FILM_NAME_BASE) {
+                    return filmLabel(id & 0xFFFF);
+                }
+                return chain.proceed();
+            });
+            getText = true;
+            log(Log.INFO, TAG, "hooked Resources.getText (film names)");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot hook Resources.getText: " + t);
+        }
+        // Either text path is enough: the camera reads filter names through one of them.
+        nameStringHooked = getString || getText;
+        if (nameStringHooked) {
+            log(Log.INFO, TAG, "film name hook active ("
+                    + (getString ? "getString" : "")
+                    + (getString && getText ? " " : "")
+                    + (getText ? "getText" : "") + ")");
+        } else {
+            log(Log.WARN, TAG, "film name hooks not installed; using camera's own string resources");
+        }
+        // Logging/analytics may ask for the resource name of an item. Answer the made-up ids
+        // instead of letting Resources throw NotFoundException.
+        try {
+            var method = Resources.class.getDeclaredMethod("getResourceEntryName", int.class);
+            hook(method).intercept(chain -> {
+                int id = (Integer) chain.getArg(0);
+                if ((id & 0xFFFF0000) == FILM_NAME_BASE) {
+                    return "film_" + (id & 0xFFFF);
+                }
+                return chain.proceed();
+            });
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot hook getResourceEntryName: " + t);
+        }
+        try {
+            var method = Resources.class.getDeclaredMethod("getResourceName", int.class);
+            hook(method).intercept(chain -> {
+                int id = (Integer) chain.getArg(0);
+                if ((id & 0xFFFF0000) == FILM_NAME_BASE) {
+                    return "com.android.camera:string/film_" + (id & 0xFFFF);
+                }
+                return chain.proceed();
+            });
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot hook getResourceName: " + t);
         }
     }
 
@@ -1050,19 +1242,15 @@ public class ModuleMain extends XposedModule {
     // height and line positions are whole pixels, so the top and bottom edges of both lines are
     // equally sharp (a fractional position blurs one edge and makes the line look shorter).
     private static Drawable nameDrawable(Resources resources, int ordinal) {
-        String label = "";
-        for (Film film : LOOKS_FILMS) {
-            if (film.ordinal() == ordinal) {
-                label = film.label();
-            }
-        }
+        LabelFont.init(currentApplication());
+        String label = filmLabel(ordinal);
         float density = resources.getDisplayMetrics().density;
         int size = Math.round(LABEL_SIZE_DP * density);
         int letterHeight = Math.round(LABEL_GLYPH_HEIGHT_DP * density);
         int letterWidthBasis = Math.round(LABEL_CAP_DP * density);   // glyph widths, weight and spacing are those of this height
         int pitch = Math.round((LABEL_CAP_DP + LABEL_LINE_GAP_DP) * density);   // line 1 top to line 2 top
         int top = Math.round((size - (letterHeight + pitch)) / 2f + LABEL_BLOCK_SHIFT_DP * density);
-        float scale = letterWidthBasis / (float) LeicaFont.CAP_HEIGHT;
+        float scale = letterWidthBasis / (float) LabelFont.CAP_HEIGHT;
 
         // Report the current screen density so the drawables are exactly size x size pixels
         // (a vector of 36 dp is, whatever display-size setting is in use).
@@ -1093,25 +1281,34 @@ public class ModuleMain extends XposedModule {
     private static void drawLine(Canvas canvas, Paint paint, String text, int width, float y,
                                  float scale, float height, float gapDp, float density,
                                  float spread) {
-        float cap = LeicaFont.CAP_HEIGHT;
+        float cap = LabelFont.CAP_HEIGHT;
         float gap = gapDp * density;
         float hyphen = HYPHEN_LENGTH * cap * scale;
 
         float letters = 0;
         for (char c : text.toCharArray()) {
             Bitmap glyph = c == '-' ? null : glyph(c);
-            letters += c == '-' ? hyphen : glyph == null ? 0 : glyph.getWidth() * scale;
+            letters += c == '-' ? hyphen
+                    : glyph == null ? fallbackWidth(c, height) : glyph.getWidth() * scale;
         }
-        // Never wider than the label with its outline: tighten the gap when a text would not fit.
+        // Never wider than the label with its outline: first condense a long line, then
+        // tighten the gap if there is still no room.
         if (text.length() > 1) {
             float room = width - 1 - 2 * LABEL_RING_DP * density;
+            if (letters > room && letters > 0) {
+                float shrink = room / letters;
+                scale *= shrink;
+                letters *= shrink;
+                height *= shrink;
+                hyphen *= shrink;
+            }
             gap = Math.min(gap, (room - letters) / (text.length() - 1));
         }
         float total = letters + gap * (text.length() - 1);
         float x = (width - total) / 2f;
         for (char c : text.toCharArray()) {
             if (c == '-') {
-                float thick = LeicaFont.STROKE * scale;
+                float thick = LabelFont.STROKE * scale;
                 float mid = y + height / 2f;
                 float grown = thick / 2f + spread;
                 canvas.drawRoundRect(new RectF(x - spread, mid - grown, x + hyphen + spread,
@@ -1123,6 +1320,20 @@ public class ModuleMain extends XposedModule {
                     float glyphWidth = glyph.getWidth() * scale;
                     drawSpread(canvas, glyph, x, y, glyphWidth, height, spread, paint);
                     x += glyphWidth;
+                } else {
+                    Paint fallback = new Paint(paint);
+                    fallback.setTypeface(LabelFont.typeface(false));
+                    fallback.setTextSize(LabelFont.textSize(height));
+                    fallback.setTextAlign(Paint.Align.LEFT);
+                    if (spread > 0) {
+                        fallback.setStyle(Paint.Style.STROKE);
+                        fallback.setStrokeWidth(spread * 2f);
+                    }
+                    String ch = String.valueOf(c);
+                    Paint.FontMetrics fm = fallback.getFontMetrics();
+                    float baseline = y + (height - (fm.descent - fm.ascent)) / 2f - fm.ascent;
+                    canvas.drawText(ch, x, baseline, fallback);
+                    x += fallback.measureText(ch);
                 }
             }
             x += gap;
@@ -1147,18 +1358,14 @@ public class ModuleMain extends XposedModule {
         }
     }
 
-    private static synchronized Bitmap glyph(char c) {
-        Bitmap glyph = GLYPH_CACHE.get(c);
-        if (glyph == null) {
-            for (String[] entry : LeicaFont.GLYPHS) {
-                if (entry[0].charAt(0) == c) {
-                    byte[] data = Base64.decode(entry[1], Base64.DEFAULT);
-                    glyph = BitmapFactory.decodeByteArray(data, 0, data.length);
-                    GLYPH_CACHE.put(c, glyph);
-                }
-            }
-        }
-        return glyph;
+    private static synchronized float fallbackWidth(char c, float height) {
+        FALLBACK_MEASURE.setTypeface(LabelFont.typeface(false));
+        FALLBACK_MEASURE.setTextSize(LabelFont.textSize(height));
+        return FALLBACK_MEASURE.measureText(String.valueOf(c));
+    }
+
+    private static Bitmap glyph(char c) {
+        return LabelFont.glyph(c);
     }
 
     // The Leica UI lists "Looks" from a separate fixed table. Add the same film items there,
@@ -1166,7 +1373,6 @@ public class ModuleMain extends XposedModule {
     private void installLooksHook(Profile profile, ClassLoader loader, Resolved resolved) {
         try {
             var looks = Class.forName(profile.looksClass(), false, loader);
-            var method = looks.getDeclaredMethod(profile.looksMethod());
             Class<?> item = resolved.create().getDeclaringClass();
             Field iconField = field(item, profile.iconField());
             Field nameIconField = field(item, profile.nameIconField());
@@ -1174,28 +1380,49 @@ public class ModuleMain extends XposedModule {
             Field labelsField = field(item, profile.labelsField());
             Field descField = field(item, profile.descField());
 
-            hook(method).intercept(chain -> {
-                Object result = chain.proceed();
+            // c() is the still Looks table; d() is the video/second Looks list used by some
+            // camera builds.
+            for (String methodName : new String[]{profile.looksMethod(), "d"}) {
+                final boolean primary = profile.looksMethod().equals(methodName);
+                final int looksCategory = "d".equals(methodName) ? 7 : PHOTO_CATEGORY;
                 try {
-                    for (Object entry : addFilms(result, LOOKS_FILMS, resolved)) {
-                        int icon = iconField.getInt(entry);
-                        nameIconField.setInt(entry, nameIconHooked
-                                ? NAME_ICON_BASE | resolved.ordinal().getInt(entry)
-                                : LOOKS_NAME_ICON);
-                        samplesField.set(entry, new ArrayList<>(List.of(icon, icon, icon)));
-                        labelsField.set(entry, new ArrayList<>(List.of(icon, icon, icon)));
-                        descField.setInt(entry, 0);
-                    }
+                    var method = looks.getDeclaredMethod(methodName);
+                    hook(method).intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            FilmResult films = addFilms(result, LOOKS_FILMS, resolved,
+                                    looksCategory);
+                            for (Object entry : films.touched()) {
+                                int icon = iconField.getInt(entry);
+                                if (nameIconHooked) {
+                                    nameIconField.setInt(entry,
+                                            NAME_ICON_BASE | resolved.ordinal().getInt(entry));
+                                } else if (films.created().contains(entry)) {
+                                    nameIconField.setInt(entry, LOOKS_NAME_ICON);
+                                }
+                                samplesField.set(entry,
+                                        new ArrayList<>(List.of(icon, icon, icon)));
+                                labelsField.set(entry,
+                                        new ArrayList<>(List.of(icon, icon, icon)));
+                                descField.setInt(entry, 0);
+                            }
+                        } catch (Throwable t) {
+                            log(Log.ERROR, TAG, "could not finish Looks items", t);
+                        }
+                        return result;
+                    });
+                    log(Log.INFO, TAG, "hooked " + profile.looksClass() + "." + methodName
+                            + " (Leica Looks)");
                 } catch (Throwable t) {
-                    log(Log.ERROR, TAG, "could not finish Looks items", t);
+                    log(Log.WARN, TAG, "cannot hook " + profile.looksClass() + "." + methodName
+                            + ": " + t);
+                    if (primary && "LCC".equals(systemProperty("ro.theme_customize"))) {
+                        problems.add(MSG_LEICA);
+                    }
                 }
-                return result;
-            });
-            log(Log.INFO, TAG, "hooked " + profile.looksClass() + "." + profile.looksMethod()
-                    + " (Leica Looks)");
+            }
         } catch (Throwable t) {
-            log(Log.WARN, TAG, "cannot hook " + profile.looksClass() + "." + profile.looksMethod()
-                    + ": " + t);
+            log(Log.WARN, TAG, "cannot hook " + profile.looksClass() + ": " + t);
             // Only worth telling the user on a phone that actually uses the Leica UI.
             if ("LCC".equals(systemProperty("ro.theme_customize"))) {
                 problems.add(MSG_LEICA);
@@ -1266,7 +1493,7 @@ public class ModuleMain extends XposedModule {
         Toast.makeText(app, TAG + " (camera " + version + "): " + text, Toast.LENGTH_LONG).show();
     }
 
-    private static Application currentApplication() {
+    static Application currentApplication() {
         try {
             return (Application) Class.forName("android.app.ActivityThread")
                     .getMethod("currentApplication").invoke(null);
@@ -1275,42 +1502,224 @@ public class ModuleMain extends XposedModule {
         }
     }
 
-    // Appends any missing film items to the finished list. Leaves the list alone on any surprise.
+    // Adds every missing film item, and renames any film entry the camera already has. An entry
+    // is reused when its ordinal, its name resource (film code or the later artistic name), its
+    // strip key or its cloud id says it is the same filter, so a camera that already lists the
+    // filter gets one renamed entry instead of a duplicate. New entries are built with the film
+    // code as their name resource.
     @SuppressWarnings("unchecked")
-    private List<Object> addFilms(Object result, Film[] films, Resolved resolved) {
+    private FilmResult addFilms(Object result, Film[] films, Resolved resolved) {
+        return addFilms(result, films, resolved, PHOTO_CATEGORY);
+    }
+
+    @SuppressWarnings("unchecked")
+    private FilmResult addFilms(Object result, Film[] films, Resolved resolved, int category) {
+        List<Object> touched = new ArrayList<>();
         List<Object> created = new ArrayList<>();
         try {
             if (!(result instanceof List<?>)) {
-                return created;
+                return new FilmResult(touched, created);
             }
             List<Object> list = (List<Object>) result;
-            Set<Integer> present = new HashSet<>();
-            for (Object entry : list) {
-                present.add(resolved.ordinal().getInt(entry));
+            if (debugEnabled()) {
+                StringBuilder ords = new StringBuilder();
+                for (Object entry : list) {
+                    try {
+                        ords.append(resolved.ordinal().getInt(entry)).append(' ');
+                    } catch (Throwable ignored) {
+                    }
+                }
+                log(Log.INFO, TAG, "film list ordinals: " + ords);
+            }
+            Map<Integer, Film> names = filmNameMap(films, resolved);
+            Map<Integer, Object> kept = new HashMap<>();
+            java.util.Iterator<Object> iterator = list.iterator();
+            while (iterator.hasNext()) {
+                Object entry = iterator.next();
+                Film film = matchFilm(entry, resolved, films, names);
+                if (film == null) {
+                    continue;
+                }
+                Object previous = kept.putIfAbsent(film.ordinal(), entry);
+                if (previous != null) {
+                    iterator.remove();
+                    log(Log.INFO, TAG, "removed duplicate " + film.label() + " entry (ordinal "
+                            + film.ordinal() + ")");
+                    continue;
+                }
+                renameFilm(entry, film, resolved, false);
+                touched.add(entry);
             }
             List<String> added = new ArrayList<>();
             for (Film film : films) {
-                if (present.contains(film.ordinal())) {
+                if (kept.containsKey(film.ordinal())) {
                     continue;
                 }
-                int name = resourceId(resolved.strings(), film.stringId(), "string");
-                int image = resourceId(resolved.images(), film.imageId(), "drawable", "mipmap",
-                        "raw");
-                Object entry = resolved.create().newInstance(PHOTO_CATEGORY, film.ordinal(), name,
-                        image, 0, film.order(), "NORMAL");
-                resolved.cloud().setInt(entry, film.cloudId());
-                if (films == FILMS) {
-                    field(entry.getClass(), "n").setInt(entry, FILM_KEY_BASE + film.ordinal());
+                try {
+                    int name = filmNameId(film, resolved);
+                    if (name == 0) {
+                        log(Log.WARN, TAG, "no safe name resource for " + film.label()
+                                + ", not adding it");
+                        continue;
+                    }
+                    int image = resourceId(resolved.images(), film.imageId(), "drawable", "mipmap",
+                            "raw");
+                    Object entry = resolved.create().newInstance(category, film.ordinal(),
+                            name, image, 0, film.order(), "NORMAL");
+                    resolved.cloud().setInt(entry, film.cloudId());
+                    renameFilm(entry, film, resolved, true);
+                    list.add(entry);
+                    touched.add(entry);
+                    created.add(entry);
+                    added.add(film.label());
+                } catch (Throwable t) {
+                    log(Log.WARN, TAG, "could not add film " + film.label(), t);
                 }
-                list.add(entry);
-                created.add(entry);
-                added.add(film.label());
             }
-            log(Log.INFO, TAG, "filter list: " + present.size() + " items, added " + added);
+            log(Log.INFO, TAG, "film list: " + list.size() + " items, reused " + kept.size()
+                    + ", added " + added);
         } catch (Throwable t) {
             log(Log.ERROR, TAG, "could not add film filters", t);
         }
-        return created;
+        return new FilmResult(touched, created);
+    }
+
+    // The made-up id always returns the film code through the hook. If the hooks could not be
+    // installed, fall back to the camera's own code-name string resource (e.g.
+    // color_effect_entry_kp_160). On 6.7/6.8 some of these were renamed away, so only use the
+    // fallback when it actually exists.
+    private int filmNameId(Film film, Resolved resolved) {
+        if (nameStringHooked) {
+            return FILM_NAME_BASE | film.ordinal();
+        }
+        int code = resourceIdSafe(resolved.strings(), film.codeStringId());
+        if (code != 0) {
+            return code;
+        }
+        // Last resort: keep the camera's existing name. Better than showing nothing.
+        return 0;
+    }
+
+    private void renameFilm(Object entry, Film film, Resolved resolved, boolean created) {
+        int name = filmNameId(film, resolved);
+        if (name == 0) {
+            log(Log.WARN, TAG, "no safe name resource for " + film.label()
+                    + ", keeping the camera's label");
+        } else {
+            try {
+                resolved.name().setInt(entry, name);
+            } catch (Throwable t) {
+                log(Log.WARN, TAG, "could not rename " + film.label() + ": " + t);
+            }
+        }
+        // An entry matched by its stock name may still have the neutral ordinal/cloud id; fill
+        // those in so the camera renders the filter it now represents.
+        try {
+            if (resolved.ordinal().getInt(entry) == 0) {
+                resolved.ordinal().setInt(entry, film.ordinal());
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (resolved.cloud().getInt(entry) == 0) {
+                resolved.cloud().setInt(entry, film.cloudId());
+            }
+        } catch (Throwable ignored) {
+        }
+        if (created) {
+            for (String keyField : new String[]{"n", "r"}) {
+                try {
+                    field(entry.getClass(), keyField).setInt(entry,
+                            FILM_KEY_BASE + film.ordinal());
+                    break;
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    // Resource ids that mean one film: the made-up name id, the pre-6.7 code key and the key the
+    // running camera uses for the same filter.
+    private static Map<Integer, Film> filmNameMap(Film[] films, Resolved resolved) {
+        Map<Integer, Film> names = new HashMap<>();
+        for (Film film : films) {
+            names.put(FILM_NAME_BASE | film.ordinal(), film);
+            int code = resourceIdSafe(resolved.strings(), film.codeStringId());
+            if (code != 0) {
+                names.put(code, film);
+            }
+            int stock = resourceIdSafe(resolved.strings(), film.stockStringId());
+            if (stock != 0) {
+                names.put(stock, film);
+            }
+        }
+        return names;
+    }
+
+    // The film an entry already represents, by ordinal, display name, strip key or cloud id.
+    private static Film matchFilm(Object entry, Resolved resolved, Film[] films,
+            Map<Integer, Film> names) {
+        // The entry must be the camera's own filter item class (j3.b / i3.b on 6.7/6.8).
+        if (entry.getClass() != resolved.create().getDeclaringClass()) {
+            return null;
+        }
+        try {
+            int ordinal = resolved.ordinal().getInt(entry);
+            for (Film film : films) {
+                if (film.ordinal() == ordinal) {
+                    return film;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Film byName = names.get(resolved.name().getInt(entry));
+            if (byName != null) {
+                return byName;
+            }
+        } catch (Throwable ignored) {
+        }
+        for (String keyField : new String[]{"n", "r"}) {
+            try {
+                Object key = field(entry.getClass(), keyField).get(entry);
+                if (key instanceof String text && text.matches("\\d+")) {
+                    int value = Integer.parseInt(text);
+                    for (Film film : films) {
+                        if (value == FILM_KEY_BASE + film.ordinal()) {
+                            return film;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            int cloud = resolved.cloud().getInt(entry);
+            for (Film film : films) {
+                if (film.cloudId() != 0 && film.cloudId() == cloud) {
+                    return film;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static int resourceIdSafe(Class<?> ids, String name) {
+        try {
+            return resourceId(ids, name, "string");
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private static String filmLabel(int ordinal) {
+        for (Film film : ALL_FILMS) {
+            if (film.ordinal() == ordinal) {
+                return film.label();
+            }
+        }
+        return "";
     }
 
     // A resource id, from the camera's id class when it has one, otherwise looked up by name.
