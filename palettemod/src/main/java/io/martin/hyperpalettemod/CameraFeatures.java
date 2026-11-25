@@ -235,6 +235,7 @@ final class CameraFeatures {
                 if (rendered != null) {
                     outer = rendered;
                     extraExif = ReEditInjector.extractExif(file);
+                    ReEditInjector.stripExifThumbnail(extraExif);
                     outerRendered = true;
                 }
             }
@@ -282,7 +283,7 @@ final class CameraFeatures {
                 public void onEvent(int event, String name) {
                     if (name != null && name.toLowerCase(Locale.ROOT).endsWith(".heic")) {
                         File file = new File(dir, name);
-                        executor.schedule(() -> addToFile(file), 2, TimeUnit.SECONDS);
+                        executor.schedule(() -> addToFile(file), 400, TimeUnit.MILLISECONDS);
                     }
                 }
             };
@@ -295,9 +296,9 @@ final class CameraFeatures {
         }
     }
 
-    // A finished file, two seconds after its last event: wait until its size is steady, add the
+    // A finished file, shortly after its last event: wait until its size is steady, add the
     // data, write it back (the original bytes go back if that fails) and let the media scanner
-    // refresh the file's size.
+    // refresh the file's size and thumbnail.
     private void addToFile(File file) {
         try {
             int mode = config.cameraMode();
@@ -305,7 +306,7 @@ final class CameraFeatures {
                 return;
             }
             long length = file.length();
-            Thread.sleep(500);
+            Thread.sleep(150);
             if (file.length() != length || length < 1024) {
                 return;   // still being written; its next event comes back here
             }
@@ -326,6 +327,8 @@ final class CameraFeatures {
                 }
                 return;
             }
+            //noinspection ResultOfMethodCallIgnored
+            file.setLastModified(System.currentTimeMillis());
             Application app = currentApplication();
             if (app != null) {
                 MediaScannerConnection.scanFile(app, new String[]{file.getPath()}, null, null);

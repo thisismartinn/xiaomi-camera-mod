@@ -42,7 +42,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.2.9-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.2.10-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -69,9 +69,9 @@ jobs:
           cat > notes.md <<'EOF'
           **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
 
-          **New in 0.2.9:**
-          - Fixes the infinite re-render / OOM / double-applied Palette bug from 0.2.8: checks `ReEditInjector.hasEdit(file)` **before** calling `OuterRenderer.render(...)` so `FileObserver` write-backs never re-render and re-wrap an already-processed photo!
+          **New in 0.2.10:**
+          - Fixes Gallery thumbnails showing the unfiltered photo: strips the stale unfiltered EXIF IFD1 thumbnail pointer from the copied `Exif` item so Gallery/MediaStore decodes the thumbnail from the filtered outer HEIC, speeds up `FileObserver` (400 ms instead of 2 s), and refreshes `lastModified` before `MediaScannerConnection.scanFile`.
           EOF
-          gh release create "draft-v0.2.9.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.2.10.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.2.9 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.2.10 (Media Editor + Camera)" --notes-file notes.md
