@@ -21,9 +21,10 @@ import java.util.List;
 // photo itself and the operation is neutral (the filter at 0 %, every Palette value 0): the editor's
 // Palette pad then starts at 0 and adjusts on top of the picture as it is.
 //
-// The HEIF boxes are edited by hand: two items are added to "iinf" and "iloc", the "meta" box grows,
-// every file offset after it moves by the growth, and the new data goes into a new "mdat" box at
-// the end. The result is read back and checked before it is returned.
+// The HEIF boxes are edited by hand: two items are added to "iinf", "iloc", and "iref" ("cdsc"
+// references to "pitm"), the "meta" box grows, every file offset after it moves by the growth, and
+// the new data goes into a new "mdat" box at the end. The result is read back and checked before it
+// is returned.
 final class ReEditInjector {
     static final int FILTER_STANDARD = 66048;   // the camera's id for "no filter"
     static final String NAMESPACE = "http://ns.xiaomi.com/photos/1.0/camera/reedit";
@@ -46,9 +47,12 @@ final class ReEditInjector {
     private static final int FTYP = cc("ftyp");
     private static final int META = cc("meta");
     private static final int MDAT = cc("mdat");
+    private static final int PITM = cc("pitm");
     private static final int ILOC = cc("iloc");
     private static final int IINF = cc("iinf");
     private static final int INFE = cc("infe");
+    private static final int IREF = cc("iref");
+    private static final int CDSC = cc("cdsc");
     private static final int EDIT = cc("edit");
     private static final int MIME = cc("mime");
 
@@ -108,18 +112,28 @@ final class ReEditInjector {
         }
         int metaBody = meta.start + meta.header + 4;   // after the full box version and flags
         List<Box> kids = boxes(file, metaBody, meta.end());
+        Box pitm = null;
         Box iinf = null;
         Box iloc = null;
+        Box iref = null;
         for (Box kid : kids) {
-            if (kid.type == IINF) {
+            if (kid.type == PITM) {
+                pitm = kid;
+            } else if (kid.type == IINF) {
                 iinf = kid;
             } else if (kid.type == ILOC) {
                 iloc = kid;
+            } else if (kid.type == IREF) {
+                iref = kid;
             }
         }
-        if (iinf == null || iloc == null) {
-            throw new IOException("no iinf or iloc box");
+        if (pitm == null || iinf == null || iloc == null) {
+            throw new IOException("no pitm, iinf or iloc box");
         }
+        int pitmVersion = file[pitm.start + pitm.header] & 0xFF;
+        int primaryId = pitmVersion == 0
+                ? (int) u16(file, pitm.start + pitm.header + 4)
+                : (int) u32(file, pitm.start + pitm.header + 4);
 
         // ---- iinf ----
         int iinfVersion = file[iinf.start + iinf.header] & 0xFF;
@@ -197,7 +211,14 @@ final class ReEditInjector {
         int iinfGrowth = editInfe.length + xmpInfe.length;
         int perEntry = table.entrySize();
         int ilocGrowth = perEntry * (addXmpItem ? 2 : 1);
-        int growth = iinfGrowth + ilocGrowth;
+
+        int irefVersion = iref == null ? 0 : (file[iref.start + iref.header] & 0xFF);
+        int irefIdSize = irefVersion == 0 ? 2 : 4;
+        byte[] editRef = cdsc(editId, primaryId, irefIdSize);
+        byte[] xmpRef = addXmpItem ? cdsc(newXmpId, primaryId, irefIdSize) : new byte[0];
+        int irefGrowth = (iref == null ? 12 : 0) + editRef.length + xmpRef.length;
+
+        int growth = iinfGrowth + ilocGrowth + irefGrowth;
         long metaEnd = meta.end();
 
         long newMdatStart = (long) file.length + growth;
@@ -241,6 +262,23 @@ final class ReEditInjector {
         }
         byte[] ilocBytes = setBoxSize(table.write(file, iloc, items), iloc.header);
 
+        // ---- iref ----
+        byte[] irefBytes;
+        if (iref != null) {
+            ByteArrayOutputStream newIref = new ByteArrayOutputStream(iref.size + irefGrowth);
+            newIref.write(file, iref.start, iref.size);
+            newIref.write(editRef);
+            newIref.write(xmpRef);
+            irefBytes = setBoxSize(newIref.toByteArray(), iref.header);
+        } else {
+            ByteArrayOutputStream newIref = new ByteArrayOutputStream(irefGrowth);
+            writeUInt(newIref, irefGrowth, 4);
+            newIref.write(new byte[]{'i', 'r', 'e', 'f', 0, 0, 0, 0});
+            newIref.write(editRef);
+            newIref.write(xmpRef);
+            irefBytes = newIref.toByteArray();
+        }
+
         // ---- meta ----
         ByteArrayOutputStream newMeta = new ByteArrayOutputStream(meta.size + growth);
         newMeta.write(file, meta.start, meta.header + 4);
@@ -249,9 +287,14 @@ final class ReEditInjector {
                 newMeta.write(iinfBytes);
             } else if (kid == iloc) {
                 newMeta.write(ilocBytes);
+            } else if (kid == iref) {
+                newMeta.write(irefBytes);
             } else {
                 newMeta.write(file, kid.start, kid.size);
             }
+        }
+        if (iref == null) {
+            newMeta.write(irefBytes);
         }
         byte[] metaBytes = setBoxSize(newMeta.toByteArray(), meta.header);
         if (metaBytes.length != meta.size + growth) {
@@ -272,7 +315,8 @@ final class ReEditInjector {
         if (result.length != newFileLength) {
             throw new IOException("size mismatch");
         }
-        verify(file, result, editId, edit, xmpId >= 0 ? xmpId : newXmpId, xmp, metaEnd, growth);
+        verify(file, result, primaryId, editId, edit, xmpId >= 0 ? xmpId : newXmpId, xmp,
+                addXmpItem);
         return result;
     }
 
@@ -411,6 +455,16 @@ final class ReEditInjector {
         writeUInt(box, 8L + body.size(), 4);
         box.write(new byte[]{'i', 'n', 'f', 'e'});
         box.write(body.toByteArray());
+        return box.toByteArray();
+    }
+
+    private static byte[] cdsc(int fromId, int toId, int idSize) throws IOException {
+        ByteArrayOutputStream box = new ByteArrayOutputStream(8 + idSize + 2 + idSize);
+        writeUInt(box, 8L + idSize + 2 + idSize, 4);
+        box.write(new byte[]{'c', 'd', 's', 'c'});
+        writeUInt(box, fromId, idSize);
+        writeUInt(box, 1, 2);   // reference count
+        writeUInt(box, toId, idSize);
         return box.toByteArray();
     }
 
@@ -564,8 +618,8 @@ final class ReEditInjector {
 
     // ---- check the result ---------------------------------------------------------------------
 
-    private static void verify(byte[] before, byte[] after, int editId, byte[] edit, int xmpId,
-                               byte[] xmp, long metaEnd, int growth) throws IOException {
+    private static void verify(byte[] before, byte[] after, int primaryId, int editId, byte[] edit,
+                               int xmpId, byte[] xmp, boolean addedXmp) throws IOException {
         List<Box> top = boxes(after, 0, after.length);
         Box meta = null;
         for (Box box : top) {
@@ -578,13 +632,45 @@ final class ReEditInjector {
         }
         List<Box> kids = boxes(after, meta.start + meta.header + 4, meta.end());
         Box iloc = null;
+        Box iref = null;
         for (Box kid : kids) {
             if (kid.type == ILOC) {
                 iloc = kid;
+            } else if (kid.type == IREF) {
+                iref = kid;
             }
         }
-        if (iloc == null) {
-            throw new IOException("verify: no iloc");
+        if (iloc == null || iref == null) {
+            throw new IOException("verify: no iloc or iref");
+        }
+        int irefVer = after[iref.start + iref.header] & 0xFF;
+        int refIdSize = irefVer == 0 ? 2 : 4;
+        boolean refEdit = false;
+        boolean refXmp = !addedXmp;
+        for (Box ref : boxes(after, iref.start + iref.header + 4, iref.end())) {
+            if (ref.type != CDSC) {
+                continue;
+            }
+            int p = ref.start + ref.header;
+            int fromId = refIdSize == 2 ? (int) u16(after, p) : (int) u32(after, p);
+            p += refIdSize;
+            int count = (int) u16(after, p);
+            p += 2;
+            for (int i = 0; i < count; i++) {
+                int toId = refIdSize == 2 ? (int) u16(after, p) : (int) u32(after, p);
+                p += refIdSize;
+                if (toId == primaryId) {
+                    if (fromId == editId) {
+                        refEdit = true;
+                    } else if (fromId == xmpId) {
+                        refXmp = true;
+                    }
+                }
+            }
+        }
+        if (!refEdit || !refXmp) {
+            throw new IOException("verify: missing iref cdsc (edit " + refEdit + ", xmp "
+                    + refXmp + ")");
         }
         Iloc now = parseIloc(after, iloc);
         List<Box> oldTop = boxes(before, 0, before.length);

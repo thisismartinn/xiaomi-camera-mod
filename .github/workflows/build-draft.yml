@@ -42,7 +42,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.2.3-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.2.4-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -67,19 +67,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          **Draft, untested on a device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen. It replaces the earlier HyperEditorMod draft and the re-edit step briefly added to HyperCameraMod; the original HyperCameraMod stays as it is and can be installed alongside.
+          **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen. It replaces the earlier HyperEditorMod draft and the re-edit step briefly added to HyperCameraMod; the original HyperCameraMod stays as it is and can be installed alongside.
 
           Settings (open the module's app): open the Palette pad on this phone; keep the pad's numbers on one line; add re-edit data to saved HEIC photos (off / photos taken with a filter / every photo, default: filtered); the editor filter id the data names (58).
 
-          How to test on a 17 Ultra:
-          1. Install, enable in LSPosed/Vector with **Camera** and **Media Editor** in the scope, open the module's app (it should say *Active*), then force-stop both apps.
-          2. Take a photo with a filter. `adb logcat -s HyperPaletteMod` shows `hooked 2 HEIC save path(s)`, `watching ...DCIM/Camera`, then for each save which path fired and `added re-edit data ...` or why it was skipped. The new photo should be about twice its usual size.
-          3. Copy the **original** photo off the phone by cable (chat apps and an iPhone strip the data). Open it in the Media Editor, pick the filter, tap the selected filter again.
+          **New in 0.2.4:** add `cdsc` references in the HEIC `iref` box linking the injected `edit` and `mime` (XMP) items to the primary image (`pitm`), matching 18 Pro HEIC originals so Media Editor's `ReEditManager::deserialize` can find the `edit` item instead of returning `reEdit list is empty`.
 
-          **New in 0.2.3:** a second read-only probe, on MIVIRenderTag.initParams, in case the first one never fired. Take a Chrome shot with a Palette and send `adb logcat -s HyperPaletteMod` (the whole start-up part: the lines saying `probing ...` or `cannot probe ...`, plus any `initParams tag:` / `candy(` lines). 0.2.2's Chrome record (id 142, LUT, version 2) is kept.
-
-          The added data uses the saved photo as its own source and a neutral Palette (the pad starts at 0), because the 17 Ultra camera does not keep the unfiltered picture. Saving the camera's own filter and Palette values for true re-editing is planned, not included. See `palettemod/README.md`.
+          The added data still uses the saved photo as its own source and a neutral Palette (the pad starts at 0), because the 17 Ultra camera does not keep the unfiltered picture. Saving the camera's own filter and Palette values for true re-editing is planned, not included. See `palettemod/README.md`.
           EOF
-          gh release create "draft-v0.2.3.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.2.4.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.2.3 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.2.4 (Media Editor + Camera)" --notes-file notes.md
