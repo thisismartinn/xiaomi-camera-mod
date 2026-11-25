@@ -36,6 +36,8 @@ final class ParamProbe {
     private final AtomicInteger filterProcLines = new AtomicInteger();
     private final AtomicBoolean halTagBypassLogged = new AtomicBoolean();
     private final ConcurrentHashMap<Integer, CaptureStyle> styleMap = new ConcurrentHashMap<>();
+    private volatile CaptureStyle latestStyle;
+    private volatile long latestStyleMs;
     private volatile ClassLoader cameraLoader;
     private volatile String last;
 
@@ -52,6 +54,14 @@ final class ParamProbe {
     // or null if not seen yet.
     CaptureStyle styleFor(int cameraFilterId) {
         return styleMap.get(cameraFilterId);
+    }
+
+    CaptureStyle latestStyle(long maxAgeMs) {
+        CaptureStyle s = latestStyle;
+        if (s == null || (System.currentTimeMillis() - latestStyleMs) > maxAgeMs) {
+            return null;
+        }
+        return s;
     }
 
     int editorFilterId(int cameraFilterId) {
@@ -246,8 +256,14 @@ final class ParamProbe {
             int mappedGenId = remapEditorFilterId(genId);
             CaptureStyle prev = styleMap.get(camId);
             List<Bitmap> keepLuts = luts != null ? luts : (prev != null ? prev.lutBitmaps() : null);
-            styleMap.put(camId, new CaptureStyle(camId, mappedGenId, degree, jpegRotation,
-                    candyParam, styleAdjust, keepLuts));
+            CaptureStyle next = new CaptureStyle(camId, mappedGenId, degree, jpegRotation,
+                    candyParam, styleAdjust, keepLuts);
+            styleMap.put(camId, next);
+            latestStyle = next;
+            latestStyleMs = System.currentTimeMillis();
+        } else {
+            latestStyle = null;
+            latestStyleMs = 0;
         }
         if (lines.get() >= MAX_LINES) {
             return;

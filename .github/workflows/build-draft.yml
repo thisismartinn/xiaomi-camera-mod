@@ -42,7 +42,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.3.5-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.3.6-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -69,9 +69,10 @@ jobs:
           cat > notes.md <<'EOF'
           **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
 
-          **New in 0.3.5:**
-          - Hooks Camera's round thumbnail preview (`FragmentBottomAction.updateThumbnail` / `A4.v1.v0`) and pushes our CandySDK-rendered rotated thumbnail directly into its `ImageView`, so the immediate round thumbnail circle shows the filtered photo right after shutter.
+          **New in 0.3.6:**
+          - Filters Camera's tiny shutter thumbnail (`F1.i4.b`) in-place inside `FragmentBottomAction.updateThumbnail` (`A4.v1.v0`) using CandySDK before it renders, eliminating the 1-second unfiltered flash and fixing the 90° tilt.
+          - Logs which save hook triggered `OuterRenderer` so we can eliminate any duplicate render pass.
           EOF
-          gh release create "draft-v0.3.5.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.3.6.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.3.5 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.3.6 (Media Editor + Camera)" --notes-file notes.md

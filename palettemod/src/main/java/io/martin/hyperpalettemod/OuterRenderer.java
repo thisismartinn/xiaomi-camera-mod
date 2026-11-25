@@ -3,7 +3,6 @@ package io.martin.hyperpalettemod;
 import android.app.Application;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.graphics.Matrix;
 import android.util.Log;
 
 import androidx.heifwriter.HeifWriter;
@@ -35,8 +34,34 @@ final class OuterRenderer {
     private OuterRenderer() {
     }
 
+    static Bitmap filterBitmap(XposedModule module, ClassLoader cameraLoader, Bitmap src,
+                               ParamProbe.CaptureStyle style) {
+        if (cameraLoader == null || src == null || src.isRecycled()
+                || style == null || style.candyParam() == null) {
+            return null;
+        }
+        long t0 = System.currentTimeMillis();
+        Bitmap out = null;
+        try {
+            out = src.copy(Bitmap.Config.ARGB_8888, true);
+            if (out == null) {
+                return null;
+            }
+            applyCandy(cameraLoader, out, style.candyParam(), style.lutBitmaps());
+            module.log(Log.INFO, TAG, "OuterRenderer thumb: " + out.getWidth() + "x"
+                    + out.getHeight() + " in " + (System.currentTimeMillis() - t0) + "ms");
+            return out;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "OuterRenderer thumb failed: " + t);
+            if (out != null && !out.isRecycled()) {
+                out.recycle();
+            }
+            return null;
+        }
+    }
+
     static Result render(XposedModule module, Application app, ClassLoader cameraLoader,
-                         byte[] unfilteredHeic, ParamProbe.CaptureStyle style) {
+                         byte[] unfilteredHeic, ParamProbe.CaptureStyle style, String path) {
         if (app == null || cameraLoader == null || style == null || style.candyParam() == null) {
             return null;
         }
@@ -56,7 +81,6 @@ final class OuterRenderer {
             applyCandy(cameraLoader, bitmap, style.candyParam(), style.lutBitmaps());
             Bitmap scaled = scaleThumb(bitmap);
             byte[] thumbJpeg = compressThumb(scaled);
-            Bitmap uiThumb = rotateThumb(scaled, style.jpegRotation());
 
             temp = File.createTempFile("hpm_outer_", ".heic", app.getCacheDir());
             try (HeifWriter writer = new HeifWriter.Builder(
@@ -72,11 +96,11 @@ final class OuterRenderer {
                 writer.stop(HEIF_STOP_TIMEOUT_MS);
             }
             byte[] encoded = Files.readAllBytes(temp.toPath());
-            module.log(Log.INFO, TAG, "OuterRenderer: rendered " + bitmap.getWidth() + "x"
-                    + bitmap.getHeight() + " -> " + encoded.length + " bytes (thumb "
+            module.log(Log.INFO, TAG, "OuterRenderer [" + path + "]: rendered " + bitmap.getWidth()
+                    + "x" + bitmap.getHeight() + " -> " + encoded.length + " bytes (thumb "
                     + (thumbJpeg != null ? thumbJpeg.length : 0) + " B) in "
                     + (System.currentTimeMillis() - t0) + "ms");
-            return new Result(encoded, thumbJpeg, uiThumb);
+            return new Result(encoded, thumbJpeg, scaled);
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "OuterRenderer failed, falling back to unfiltered outer: " + t);
             return null;
@@ -108,21 +132,6 @@ final class OuterRenderer {
             scaled.compress(Bitmap.CompressFormat.JPEG, 55, out);
         }
         return out.toByteArray();
-    }
-
-    private static Bitmap rotateThumb(Bitmap scaled, int degrees) {
-        int norm = ((degrees % 360) + 360) % 360;
-        if (norm == 0) {
-            return scaled;
-        }
-        Matrix m = new Matrix();
-        m.postRotate(norm);
-        Bitmap rotated = Bitmap.createBitmap(scaled, 0, 0, scaled.getWidth(), scaled.getHeight(),
-                m, true);
-        if (rotated != scaled && !scaled.isRecycled()) {
-            scaled.recycle();
-        }
-        return rotated;
     }
 
     private static void applyCandy(ClassLoader loader, Bitmap bitmap, String candyParam,

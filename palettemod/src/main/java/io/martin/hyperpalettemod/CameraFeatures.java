@@ -79,6 +79,7 @@ final class CameraFeatures {
     private volatile WeakReference<ImageView> thumbViewRef = new WeakReference<>(null);
     private volatile Bitmap lastUiThumb;
     private volatile long lastUiThumbMs;
+    private volatile long lastInPlaceThumbMs;
 
     CameraFeatures(XposedModule module, Config config) {
         this.module = module;
@@ -335,20 +336,46 @@ final class CameraFeatures {
                 } catch (Throwable ignored) {
                 }
                 Object thumb = chain.getArg(0);
-                Bitmap override = lastUiThumb;
-                boolean fresh = override != null && !override.isRecycled()
-                        && (System.currentTimeMillis() - lastUiThumbMs) < 4000;
+                boolean transition = Boolean.TRUE.equals(chain.getArg(1));
+                boolean filteredInPlace = false;
                 boolean swapped = false;
-                if (fresh && thumb != null) {
-                    try {
-                        bmpField.set(thumb, override);
-                        swapped = true;
-                    } catch (Throwable ignored) {
+                if (thumb != null && config.cameraMode() != Settings.MODE_OFF
+                        && config.cameraJavaFilter()) {
+                    Bitmap override = lastUiThumb;
+                    boolean fresh = override != null && !override.isRecycled()
+                            && (System.currentTimeMillis() - lastUiThumbMs) < 4000;
+                    if (fresh) {
+                        try {
+                            bmpField.set(thumb, override);
+                            swapped = true;
+                        } catch (Throwable ignored) {
+                        }
+                    } else if (transition) {
+                        ParamProbe.CaptureStyle style = probe.latestStyle(5000);
+                        if (style != null && style.candyParam() != null) {
+                            try {
+                                Object bObj = bmpField.get(thumb);
+                                if (bObj instanceof Bitmap src && !src.isRecycled()) {
+                                    Bitmap filtered = OuterRenderer.filterBitmap(module,
+                                            probe.cameraLoader(), src, style);
+                                    if (filtered != null) {
+                                        bmpField.set(thumb, filtered);
+                                        filteredInPlace = true;
+                                        lastUiThumb = filtered;
+                                        lastUiThumbMs = System.currentTimeMillis();
+                                        lastInPlaceThumbMs = lastUiThumbMs;
+                                    }
+                                }
+                            } catch (Throwable ignored) {
+                            }
+                        }
                     }
                 }
-                if (thumbLogs.incrementAndGet() <= 8) {
+                if (thumbLogs.incrementAndGet() <= 12) {
                     module.log(Log.INFO, TAG, "thumb v0: thumb=" + (thumb != null)
-                            + ", swapped=" + swapped + ", fresh=" + fresh + ", iv=" + (iv != null));
+                            + ", transition=" + transition
+                            + ", filteredInPlace=" + filteredInPlace
+                            + ", swapped=" + swapped + ", iv=" + (iv != null));
                 }
                 return chain.proceed();
             });
@@ -363,8 +390,12 @@ final class CameraFeatures {
         if (uiThumb == null || uiThumb.isRecycled()) {
             return;
         }
+        long now = System.currentTimeMillis();
         lastUiThumb = uiThumb;
-        lastUiThumbMs = System.currentTimeMillis();
+        lastUiThumbMs = now;
+        if (now - lastInPlaceThumbMs < 3000) {
+            return;
+        }
         MAIN.post(() -> {
             ImageView iv = thumbViewRef.get();
             if (iv != null && !uiThumb.isRecycled()) {
@@ -497,7 +528,7 @@ final class CameraFeatures {
             boolean outerRendered = false;
             if (useLive && style.candyParam() != null) {
                 OuterRenderer.Result rendered = OuterRenderer.render(module, currentApplication(),
-                        probe.cameraLoader(), file, style);
+                        probe.cameraLoader(), file, style, path);
                 if (rendered != null) {
                     outer = rendered.heic();
                     extraExif = ReEditInjector.stripExifThumbnail(
