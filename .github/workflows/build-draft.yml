@@ -42,7 +42,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.2.11-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.2.12-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -69,9 +69,9 @@ jobs:
           cat > notes.md <<'EOF'
           **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
 
-          **New in 0.2.11:**
-          - Strips Xiaomi Gallery's stale unfiltered `XMTH` quick-view JPEG segments (0.7–1.2 MB APP2 chain inside `Exif`) in addition to the EXIF IFD1 thumbnail pointer, so **both Gallery grid thumbnails and Gallery full-screen view** decode from the filtered outer HEIC (while keeping EXIF, ICC profile, OIS, and camera JSON intact and saving ~1 MB per photo).
+          **New in 0.2.12:**
+          - Fixes `OuterRenderer`'s `CandySDK` call to use **`format 5`** (RGBA `Bitmap`, matching Media Editor's own `CandySDK` init) instead of `10` (YUV `HardwareBuffer`) and call `configPipeline` (`a`) instead of `updatePipeline` (`i`), so `CandySDK` actually renders the filter + Palette onto the outer HEIC!
           EOF
-          gh release create "draft-v0.2.11.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.2.12.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.2.11 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.2.12 (Media Editor + Camera)" --notes-file notes.md

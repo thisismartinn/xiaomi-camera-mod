@@ -22,7 +22,7 @@ import io.github.libxposed.api.XposedModule;
 final class OuterRenderer {
     private static final String TAG = "HyperPaletteMod";
     private static final String CANDY_SDK = "com.xiaomi.milab.filtersdk.CandySDK";
-    private static final int CANDY_MODE_BITMAP = 10;
+    private static final int CANDY_MODE_BITMAP = 5;   // RGBA Bitmap (10 is YUV HardwareBuffer)
     private static final int HEIF_QUALITY = 95;
     private static final long HEIF_STOP_TIMEOUT_MS = 15_000L;
 
@@ -86,8 +86,8 @@ final class OuterRenderer {
         Class<?> sdkClass = Class.forName(CANDY_SDK, false, loader);
         Object sdk = sdkClass.getDeclaredConstructor(int.class).newInstance(CANDY_MODE_BITMAP);
         try {
-            String pipeline = "CopyInput@" + candyParam;
-            sdkClass.getMethod("i", String.class).invoke(sdk, pipeline);
+            String pipeline = candyParam.startsWith("@") ? candyParam.substring(1) : candyParam;
+            sdkClass.getMethod("a", String.class).invoke(sdk, pipeline);
             int[] indices = (int[]) sdkClass.getMethod("b", String.class).invoke(sdk, pipeline);
             if (indices != null && lutBitmaps != null && !lutBitmaps.isEmpty()) {
                 Method setLut = sdkClass.getMethod("f", int.class, Bitmap.class);
