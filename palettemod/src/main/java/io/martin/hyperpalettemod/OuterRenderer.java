@@ -1,0 +1,108 @@
+package io.martin.hyperpalettemod;
+
+import android.app.Application;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.util.Log;
+
+import androidx.heifwriter.HeifWriter;
+
+import java.io.File;
+import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.util.List;
+
+import io.github.libxposed.api.XposedModule;
+
+// Renders the camera's live filter + Palette look onto an unfiltered HEIC using the camera's own
+// CandySDK, then encodes the filtered Bitmap back to HEIC via Jetpack HeifWriter.
+// The caller then copies the original Exif item onto the rendered HEIC and embeds the unfiltered
+// HEIC inside the "edit" protobuf so Gallery shows the filtered photo while Media Editor can
+// non-destructively re-edit it.
+final class OuterRenderer {
+    private static final String TAG = "HyperPaletteMod";
+    private static final String CANDY_SDK = "com.xiaomi.milab.filtersdk.CandySDK";
+    private static final int CANDY_MODE_BITMAP = 10;
+    private static final int HEIF_QUALITY = 95;
+    private static final long HEIF_STOP_TIMEOUT_MS = 15_000L;
+
+    private OuterRenderer() {
+    }
+
+    static byte[] render(XposedModule module, Application app, ClassLoader cameraLoader,
+                         byte[] unfilteredHeic, ParamProbe.CaptureStyle style) {
+        if (app == null || cameraLoader == null || style == null || style.candyParam() == null) {
+            return null;
+        }
+        long t0 = System.currentTimeMillis();
+        Bitmap bitmap = null;
+        File temp = null;
+        try {
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inMutable = true;
+            opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            bitmap = BitmapFactory.decodeByteArray(unfilteredHeic, 0, unfilteredHeic.length, opts);
+            if (bitmap == null) {
+                module.log(Log.WARN, TAG, "OuterRenderer: failed to decode unfiltered HEIC");
+                return null;
+            }
+
+            applyCandy(cameraLoader, bitmap, style.candyParam(), style.lutBitmaps());
+
+            temp = File.createTempFile("hpm_outer_", ".heic", app.getCacheDir());
+            try (HeifWriter writer = new HeifWriter.Builder(
+                    temp.getAbsolutePath(),
+                    bitmap.getWidth(),
+                    bitmap.getHeight(),
+                    HeifWriter.INPUT_MODE_BITMAP)
+                    .setQuality(HEIF_QUALITY)
+                    .setRotation(0)
+                    .build()) {
+                writer.start();
+                writer.addBitmap(bitmap);
+                writer.stop(HEIF_STOP_TIMEOUT_MS);
+            }
+            byte[] encoded = Files.readAllBytes(temp.toPath());
+            module.log(Log.INFO, TAG, "OuterRenderer: rendered " + bitmap.getWidth() + "x"
+                    + bitmap.getHeight() + " -> " + encoded.length + " bytes in "
+                    + (System.currentTimeMillis() - t0) + "ms");
+            return encoded;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "OuterRenderer failed, falling back to unfiltered outer: " + t);
+            return null;
+        } finally {
+            if (bitmap != null && !bitmap.isRecycled()) {
+                bitmap.recycle();
+            }
+            if (temp != null) {
+                //noinspection ResultOfMethodCallIgnored
+                temp.delete();
+            }
+        }
+    }
+
+    private static void applyCandy(ClassLoader loader, Bitmap bitmap, String candyParam,
+                                   List<Bitmap> lutBitmaps) throws Exception {
+        Class<?> sdkClass = Class.forName(CANDY_SDK, false, loader);
+        Object sdk = sdkClass.getDeclaredConstructor(int.class).newInstance(CANDY_MODE_BITMAP);
+        try {
+            String pipeline = "CopyInput@" + candyParam;
+            sdkClass.getMethod("i", String.class).invoke(sdk, pipeline);
+            int[] indices = (int[]) sdkClass.getMethod("b", String.class).invoke(sdk, pipeline);
+            if (indices != null && lutBitmaps != null && !lutBitmaps.isEmpty()) {
+                Method setLut = sdkClass.getMethod("f", int.class, Bitmap.class);
+                int n = Math.min(indices.length, lutBitmaps.size());
+                for (int i = 0; i < n; i++) {
+                    Bitmap lut = lutBitmaps.get(i);
+                    if (lut != null && !lut.isRecycled()) {
+                        setLut.invoke(sdk, indices[i], lut);
+                    }
+                }
+            }
+            float[] rect = new float[]{0f, 0f, bitmap.getWidth(), bitmap.getHeight()};
+            sdkClass.getMethod("c", Object.class, float[].class).invoke(sdk, bitmap, rect);
+        } finally {
+            sdkClass.getMethod("e").invoke(sdk);
+        }
+    }
+}

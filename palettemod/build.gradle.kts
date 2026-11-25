@@ -12,7 +12,7 @@ android {
         minSdk = 30
         targetSdk = 37
         versionCode = 1
-        versionName = "0.2.7-draft"
+        versionName = "0.2.8-draft"
     }
 
     buildTypes {
@@ -44,4 +44,5 @@ android {
 dependencies {
     compileOnly(libs.libxposed.api)
     implementation(libs.libxposed.service)
+    implementation("androidx.heifwriter:heifwriter:1.0.0")
 }

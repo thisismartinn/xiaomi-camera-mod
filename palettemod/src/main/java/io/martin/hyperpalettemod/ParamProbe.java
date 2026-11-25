@@ -1,5 +1,6 @@
 package io.martin.hyperpalettemod;
 
+import android.graphics.Bitmap;
 import android.hardware.camera2.CaptureRequest;
 import android.media.Image;
 import android.util.Log;
@@ -7,6 +8,8 @@ import android.util.Log;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -23,7 +26,8 @@ final class ParamProbe {
     private static final String CANDY = "com.xiaomi.camera.mivi.filter.MIVIRenderTag$TagForCandy";
     private static final int MAX_LINES = 40;
 
-    record CaptureStyle(int cameraFilterId, int editorFilterId, int degree, String styleAdjust) {
+    record CaptureStyle(int cameraFilterId, int editorFilterId, int degree,
+                        String candyParam, String styleAdjust, List<Bitmap> lutBitmaps) {
     }
 
     private final XposedModule module;
@@ -32,11 +36,16 @@ final class ParamProbe {
     private final AtomicInteger filterProcLines = new AtomicInteger();
     private final AtomicBoolean halTagBypassLogged = new AtomicBoolean();
     private final ConcurrentHashMap<Integer, CaptureStyle> styleMap = new ConcurrentHashMap<>();
+    private volatile ClassLoader cameraLoader;
     private volatile String last;
 
     ParamProbe(XposedModule module, Config config) {
         this.module = module;
         this.config = config;
+    }
+
+    ClassLoader cameraLoader() {
+        return cameraLoader;
     }
 
     // Returns the latest CaptureStyle learned from MIVIRenderTag for a given camera filterId,
@@ -51,6 +60,7 @@ final class ParamProbe {
     }
 
     void install(ClassLoader loader) {
+        this.cameraLoader = loader;
         installTag(loader);
         installFilterProcessorProbe(loader);
         installJavaFilterRouting(loader);
@@ -172,7 +182,9 @@ final class ParamProbe {
         int camId = -1;
         int genId = -1;
         int degree = 100;
+        String candyParam = null;
         String styleAdjust = null;
+        List<Bitmap> luts = null;
         StringBuilder sb = new StringBuilder();
         for (Field f : tag.getClass().getDeclaredFields()) {
             if (Modifier.isStatic(f.getModifiers())) {
@@ -191,13 +203,29 @@ final class ParamProbe {
                     degree = i;
                 } else if ("mCandyParams".equals(f.getName()) && v instanceof java.util.List<?> list) {
                     for (Object o : list) {
-                        if (o instanceof String s) {
+                        if (o instanceof String s && !s.isEmpty()) {
+                            if (candyParam == null) {
+                                candyParam = s;
+                            }
                             String extracted = extractStyleAdjust(s);
-                            if (extracted != null) {
+                            if (extracted != null && styleAdjust == null) {
                                 styleAdjust = extracted;
-                                break;
                             }
                         }
+                    }
+                } else if ("mLutBitmaps".equals(f.getName()) && v instanceof java.util.List<?> list
+                        && !list.isEmpty()) {
+                    List<Bitmap> copies = new ArrayList<>(list.size());
+                    for (Object o : list) {
+                        if (o instanceof Bitmap b && !b.isRecycled()) {
+                            Bitmap copy = b.copy(Bitmap.Config.ARGB_8888, false);
+                            if (copy != null) {
+                                copies.add(copy);
+                            }
+                        }
+                    }
+                    if (!copies.isEmpty()) {
+                        luts = copies;
                     }
                 }
                 if (v instanceof java.util.List<?> list) {
@@ -212,7 +240,11 @@ final class ParamProbe {
             }
         }
         if (camId > 0 && genId > 0) {
-            styleMap.put(camId, new CaptureStyle(camId, genId, degree, styleAdjust));
+            int mappedGenId = remapEditorFilterId(genId);
+            CaptureStyle prev = styleMap.get(camId);
+            List<Bitmap> keepLuts = luts != null ? luts : (prev != null ? prev.lutBitmaps() : null);
+            styleMap.put(camId, new CaptureStyle(camId, mappedGenId, degree, candyParam,
+                    styleAdjust, keepLuts));
         }
         if (lines.get() >= MAX_LINES) {
             return;
@@ -224,6 +256,18 @@ final class ParamProbe {
         last = text;
         lines.incrementAndGet();
         module.log(Log.INFO, TAG, "initParams tag: " + text);
+    }
+
+    // 17 Ultra Media Editor uses 14x/15x IDs for Leica filters in the Leica UI, while
+    // MIVIRenderTag.mGeneralFilterId reports the legacy 2..7 IDs for VIV, NAT, HC, and BLU.
+    private static int remapEditorFilterId(int genId) {
+        return switch (genId) {
+            case 2 -> 140;   // VIV
+            case 3 -> 141;   // NAT
+            case 5 -> 149;   // HC
+            case 7 -> 151;   // BLU
+            default -> genId;
+        };
     }
 
     private static String extractStyleAdjust(String candy) {

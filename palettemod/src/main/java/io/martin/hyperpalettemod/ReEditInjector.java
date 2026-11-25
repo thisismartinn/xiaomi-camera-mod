@@ -53,10 +53,73 @@ final class ReEditInjector {
     private static final int INFE = cc("infe");
     private static final int IREF = cc("iref");
     private static final int CDSC = cc("cdsc");
+    private static final int EXIF = cc("Exif");
     private static final int EDIT = cc("edit");
     private static final int MIME = cc("mime");
 
     private ReEditInjector() {
+    }
+
+    // Extracts the raw "Exif" item bytes from a HEIC (including its 4-byte TIFF header offset),
+    // or null if the file has no plain-extent Exif item.
+    static byte[] extractExif(byte[] file) {
+        try {
+            List<Box> top = boxes(file, 0, file.length);
+            Box meta = null;
+            for (Box box : top) {
+                if (box.type == META) {
+                    meta = box;
+                    break;
+                }
+            }
+            if (meta == null) {
+                return null;
+            }
+            List<Box> kids = boxes(file, meta.start + meta.header + 4, meta.end());
+            Box iinf = null;
+            Box iloc = null;
+            for (Box kid : kids) {
+                if (kid.type == IINF) {
+                    iinf = kid;
+                } else if (kid.type == ILOC) {
+                    iloc = kid;
+                }
+            }
+            if (iinf == null || iloc == null) {
+                return null;
+            }
+            int iinfVer = file[iinf.start + iinf.header] & 0xFF;
+            int entriesAt = iinf.start + iinf.header + 4 + (iinfVer == 0 ? 2 : 4);
+            int exifId = -1;
+            for (Box infe : boxes(file, entriesAt, iinf.end())) {
+                if (infe.type != INFE) {
+                    continue;
+                }
+                int ver = file[infe.start + infe.header] & 0xFF;
+                if (ver < 2) {
+                    continue;
+                }
+                int p = infe.start + infe.header + 4;
+                int id = ver == 2 ? (int) u16(file, p) : (int) u32(file, p);
+                p += (ver == 2 ? 2 : 4) + 2;
+                if ((int) u32(file, p) == EXIF) {
+                    exifId = id;
+                    break;
+                }
+            }
+            if (exifId < 0) {
+                return null;
+            }
+            Iloc table = parseIloc(file, iloc);
+            for (Item item : table.items) {
+                if (item.id == exifId && item.cm == 0 && item.extents.size() == 1) {
+                    Extent e = item.extents.get(0);
+                    return Arrays.copyOfRange(file, (int) e.offset, (int) (e.offset + e.length));
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     // The photo's own camera filter id, read from the camera's private JSON in the Exif item
@@ -97,24 +160,28 @@ final class ReEditInjector {
     // Throws IOException when the file is not laid out as expected; the caller then keeps the
     // original untouched.
     static byte[] inject(byte[] file, int editorFilterId, int progress) throws IOException {
-        return inject(file, editorFilterId, progress, editorFilterId == EDITOR_CHROME, null);
+        return inject(file, file, null, editorFilterId, progress, editorFilterId == EDITOR_CHROME,
+                null);
     }
 
     static byte[] inject(byte[] file, int editorFilterId, int progress, boolean nativeStyle)
             throws IOException {
-        return inject(file, editorFilterId, progress, nativeStyle, null);
+        return inject(file, file, null, editorFilterId, progress, nativeStyle, null);
     }
 
     static byte[] inject(byte[] file, int editorFilterId, int progress, boolean nativeStyle,
                          String styleAdjust) throws IOException {
+        return inject(file, file, null, editorFilterId, progress, nativeStyle, styleAdjust);
+    }
+
+    static byte[] inject(byte[] file, byte[] sourceImage, byte[] extraExif, int editorFilterId,
+                         int progress, boolean nativeStyle, String styleAdjust)
+            throws IOException {
         List<Box> top = boxes(file, 0, file.length);
         Box meta = null;
         for (Box box : top) {
             if (box.type == META && meta == null) {
                 meta = box;
-            }
-            if (box.type == MDAT && meta == null) {
-                throw new IOException("mdat before meta");
             }
         }
         if (meta == null) {
@@ -153,6 +220,7 @@ final class ReEditInjector {
         List<Box> infes = boxes(file, entriesAt, iinf.end());
         int maxId = 0;
         int xmpId = -1;
+        boolean hasExif = false;
         for (Box infe : infes) {
             if (infe.type != INFE) {
                 throw new IOException("unexpected box in iinf");
@@ -177,6 +245,9 @@ final class ReEditInjector {
             if (itemType == EDIT) {
                 return null;   // already has re-edit data
             }
+            if (itemType == EXIF) {
+                hasExif = true;
+            }
             if (itemType == MIME && xmpId < 0) {
                 p = skipCString(file, p, infe.end());   // item name
                 String contentType = cString(file, p, infe.end());
@@ -185,11 +256,13 @@ final class ReEditInjector {
                 }
             }
         }
-        if (maxId + 2 > 0xFFFF) {
+        boolean addExifItem = !hasExif && extraExif != null && extraExif.length > 0;
+        if (maxId + 3 > 0xFFFF) {
             throw new IOException("item ids too large");
         }
         int editId = maxId + 1;
         int newXmpId = maxId + 2;
+        int newExifId = maxId + 3;
 
         // ---- iloc ----
         Iloc table = parseIloc(file, iloc);
@@ -204,7 +277,7 @@ final class ReEditInjector {
         }
 
         // ---- the new data ----
-        byte[] edit = buildEdit(file, editorFilterId, progress, nativeStyle, styleAdjust);
+        byte[] edit = buildEdit(sourceImage, editorFilterId, progress, nativeStyle, styleAdjust);
         byte[] xmp;
         if (xmpId >= 0) {
             Extent e = xmpItem.extents.get(0);
@@ -218,15 +291,18 @@ final class ReEditInjector {
         boolean addXmpItem = xmpId < 0;
         byte[] editInfe = infe(editId, "edit", null);
         byte[] xmpInfe = addXmpItem ? infe(newXmpId, "mime", "application/rdf+xml") : new byte[0];
-        int iinfGrowth = editInfe.length + xmpInfe.length;
+        byte[] exifInfe = addExifItem ? infe(newExifId, "Exif", null) : new byte[0];
+        int addedItems = 1 + (addXmpItem ? 1 : 0) + (addExifItem ? 1 : 0);
+        int iinfGrowth = editInfe.length + xmpInfe.length + exifInfe.length;
         int perEntry = table.entrySize();
-        int ilocGrowth = perEntry * (addXmpItem ? 2 : 1);
+        int ilocGrowth = perEntry * addedItems;
 
         int irefVersion = iref == null ? 0 : (file[iref.start + iref.header] & 0xFF);
         int irefIdSize = irefVersion == 0 ? 2 : 4;
         byte[] editRef = cdsc(editId, primaryId, irefIdSize);
         byte[] xmpRef = addXmpItem ? cdsc(newXmpId, primaryId, irefIdSize) : new byte[0];
-        int irefGrowth = (iref == null ? 12 : 0) + editRef.length + xmpRef.length;
+        byte[] exifRef = addExifItem ? cdsc(newExifId, primaryId, irefIdSize) : new byte[0];
+        int irefGrowth = (iref == null ? 12 : 0) + editRef.length + xmpRef.length + exifRef.length;
 
         int growth = iinfGrowth + ilocGrowth + irefGrowth;
         long metaEnd = meta.end();
@@ -234,7 +310,8 @@ final class ReEditInjector {
         long newMdatStart = (long) file.length + growth;
         long editOffset = newMdatStart + 8;
         long xmpOffset = editOffset + edit.length;
-        long newFileLength = xmpOffset + xmp.length;
+        long exifOffset = xmpOffset + xmp.length;
+        long newFileLength = exifOffset + (addExifItem ? extraExif.length : 0);
         if (newFileLength > Integer.MAX_VALUE - 16) {
             throw new IOException("file too large");
         }
@@ -242,10 +319,11 @@ final class ReEditInjector {
         // ---- iinf ----
         ByteArrayOutputStream newIinf = new ByteArrayOutputStream(iinf.size + iinfGrowth);
         newIinf.write(file, iinf.start, iinf.header + 4);   // box header, version and flags
-        writeUInt(newIinf, infes.size() + (addXmpItem ? 2 : 1), countSize);
+        writeUInt(newIinf, infes.size() + addedItems, countSize);
         newIinf.write(file, entriesAt, iinf.end() - entriesAt);
         newIinf.write(editInfe);
         newIinf.write(xmpInfe);
+        newIinf.write(exifInfe);
         byte[] iinfBytes = setBoxSize(newIinf.toByteArray(), iinf.header);
 
         // ---- iloc ----
@@ -270,6 +348,9 @@ final class ReEditInjector {
         if (addXmpItem) {
             items.add(Item.file(newXmpId, xmpOffset, xmp.length));
         }
+        if (addExifItem) {
+            items.add(Item.file(newExifId, exifOffset, extraExif.length));
+        }
         byte[] ilocBytes = setBoxSize(table.write(file, iloc, items), iloc.header);
 
         // ---- iref ----
@@ -279,6 +360,7 @@ final class ReEditInjector {
             newIref.write(file, iref.start, iref.size);
             newIref.write(editRef);
             newIref.write(xmpRef);
+            newIref.write(exifRef);
             irefBytes = setBoxSize(newIref.toByteArray(), iref.header);
         } else {
             ByteArrayOutputStream newIref = new ByteArrayOutputStream(irefGrowth);
@@ -286,6 +368,7 @@ final class ReEditInjector {
             newIref.write(new byte[]{'i', 'r', 'e', 'f', 0, 0, 0, 0});
             newIref.write(editRef);
             newIref.write(xmpRef);
+            newIref.write(exifRef);
             irefBytes = newIref.toByteArray();
         }
 
@@ -317,10 +400,14 @@ final class ReEditInjector {
         out.write(file, 0, meta.start);
         out.write(metaBytes);
         out.write(file, meta.end(), file.length - meta.end());
-        writeUInt(out, 8L + edit.length + xmp.length, 4);
+        long mdatPayload = (long) edit.length + xmp.length + (addExifItem ? extraExif.length : 0);
+        writeUInt(out, 8L + mdatPayload, 4);
         out.write(new byte[]{'m', 'd', 'a', 't'});
         out.write(edit);
         out.write(xmp);
+        if (addExifItem) {
+            out.write(extraExif);
+        }
         byte[] result = out.toByteArray();
         if (result.length != newFileLength) {
             throw new IOException("size mismatch");
@@ -332,6 +419,19 @@ final class ReEditInjector {
 
     // ---- what the editor reads ---------------------------------------------------------------
 
+    // Prefix map from 17U Media Editor (classes2.dex): Leica/film filters carry their own
+    // vignette/noise prefix before @StyleAdjustEffect; non-Leica filters use @StyleAdjustEffect
+    // directly with no Leica prefix.
+    private static String nativePrefixFor(int filterId) {
+        return switch (filterId) {
+            case 2, 3, 4, 6, 7, 140, 141, 142, 149, 151 -> "Leica;VignetteStrength=0.35";
+            case 5 -> "Leica;VignetteStrength=0.35;NoiseStrength=0.4";
+            case 101 -> "Leica;VignetteStrength=0.3;NoiseStrength=0.3";
+            case 138 -> "Leica;NoiseStrength=0.2";
+            default -> "";
+        };
+    }
+
     private static byte[] buildEdit(byte[] image, int filterId, int progress, boolean nativeStyle,
                                     String styleAdjust) throws IOException {
         ByteArrayOutputStream filter = new ByteArrayOutputStream();
@@ -340,9 +440,12 @@ final class ReEditInjector {
         putBytes(filter, 3, (nativeStyle ? "LUT" : RENDER_TYPE).getBytes(StandardCharsets.UTF_8));
         String colorParam;
         if (nativeStyle) {
-            colorParam = styleAdjust != null
-                    ? "Leica;VignetteStrength=0.35" + styleAdjust
-                    : NATIVE_SCRIPT_HEAD + "0.0000" + NATIVE_SCRIPT_TAIL;
+            String prefix = nativePrefixFor(filterId);
+            String style = styleAdjust != null ? styleAdjust
+                    : "@StyleAdjustEffect;Algos=12;SharpenIntensity=0.0000;ContrastIntensity=0.0000;"
+                    + "SaturationIntensity=0.0000;Temperature=0.0000;Tint=0.0000;Grain=0.0000;"
+                    + "VignetteIntensity=0.0000";
+            colorParam = prefix + style;
         } else {
             colorParam = COLOR_PARAM_PREFIX
                     + (styleAdjust != null ? styleAdjust : COLOR_PARAM_NEUTRAL);

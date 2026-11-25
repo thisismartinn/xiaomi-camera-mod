@@ -215,15 +215,29 @@ final class CameraFeatures {
                 : (cameraFilter == ReEditInjector.CAMERA_CHROME ? ReEditInjector.EDITOR_CHROME
                 : config.cameraFilter());
         boolean nativeStyle = learned > 0 || cameraFilter == ReEditInjector.CAMERA_CHROME;
-        boolean useLive = config.cameraJavaFilter() && style != null && style.styleAdjust() != null;
+        boolean useLive = config.cameraJavaFilter() && style != null
+                && (style.styleAdjust() != null || style.candyParam() != null);
         int progress = useLive ? style.degree() : 0;
         String styleAdjust = useLive ? style.styleAdjust() : null;
         try {
-            byte[] injected = ReEditInjector.inject(file, filter, progress, nativeStyle,
-                    styleAdjust);
+            byte[] outer = file;
+            byte[] extraExif = null;
+            boolean outerRendered = false;
+            if (useLive && style.candyParam() != null) {
+                byte[] rendered = OuterRenderer.render(module, currentApplication(),
+                        probe.cameraLoader(), file, style);
+                if (rendered != null) {
+                    outer = rendered;
+                    extraExif = ReEditInjector.extractExif(file);
+                    outerRendered = true;
+                }
+            }
+            byte[] injected = ReEditInjector.inject(outer, file, extraExif, filter, progress,
+                    nativeStyle, styleAdjust);
             if (injected != null && logged.compareAndSet(false, true)) {
                 module.log(Log.INFO, TAG, "added re-edit data on the " + path + " (camera filter "
                         + cameraFilter + ", editor filter " + filter + ", native=" + nativeStyle
+                        + ", outerRendered=" + outerRendered
                         + ", liveStyle=" + (styleAdjust != null ? styleAdjust : "neutral")
                         + ", +" + (injected.length - file.length)
                         + " bytes); logging the first photo only");
