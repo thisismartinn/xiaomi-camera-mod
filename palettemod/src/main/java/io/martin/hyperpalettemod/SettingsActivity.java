@@ -143,6 +143,15 @@ public class SettingsActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(filterRow);
         root.addView(note("Used only if a filter ID isn't detected automatically."));
+
+        Button restartButton = new Button(this);
+        restartButton.setText("Force-stop Camera & Media Editor");
+        restartButton.setAllCaps(false);
+        restartButton.setOnClickListener(v -> forceStopTargets());
+        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        btnParams.topMargin = dp(20);
+        root.addView(restartButton, btnParams);
     }
 
     @Override
@@ -232,6 +241,26 @@ public class SettingsActivity extends Activity {
         } catch (RuntimeException e) {
             Toast.makeText(this, "Scope request failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
+    }
+
+    private void forceStopTargets() {
+        new Thread(() -> {
+            try {
+                Process p = new ProcessBuilder("su", "-c",
+                        "am force-stop " + Settings.CAMERA_PACKAGE
+                                + " && am force-stop " + Settings.EDITOR_PACKAGE)
+                        .redirectErrorStream(true)
+                        .start();
+                int code = p.waitFor();
+                runOnUiThread(() -> Toast.makeText(this,
+                        code == 0 ? "Stopped Camera & Media Editor"
+                                : "Force-stop failed (grant root access to HyperPaletteMod)",
+                        Toast.LENGTH_SHORT).show());
+            } catch (Throwable t) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Force-stop failed: " + t.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }, "HyperPaletteMod-stop").start();
     }
 
     // ---- writing -------------------------------------------------------------------------------

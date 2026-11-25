@@ -42,7 +42,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.3.3-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.3.4-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -69,9 +69,9 @@ jobs:
           cat > notes.md <<'EOF'
           **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
 
-          **New in 0.3.3:**
-          - Replaces the EXIF IFD1 JPEG thumbnail **in-place** with a fresh 240px filtered JPEG encoded directly from `OuterRenderer`'s filtered `Bitmap` (updating tag `0x0202` length while still stripping stale `XMTH`), so Camera's round thumbnail circle pops in immediately after shutter!
+          **New in 0.3.4:**
+          - Adds a **"Force-stop Camera & Media Editor"** button in Settings (uses root `su` to restart both apps in one tap).
           EOF
-          gh release create "draft-v0.3.3.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.3.4.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.3.3 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.3.4 (Media Editor + Camera)" --notes-file notes.md
