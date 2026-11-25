@@ -122,47 +122,71 @@ final class ReEditInjector {
         return null;
     }
 
-    // Zeroes the TIFF IFD0 next-IFD pointer in a HEIF Exif item so Gallery/MediaStore ignores
-    // the stale unfiltered IFD1 JPEG thumbnail and decodes the thumbnail from the filtered image.
-    static void stripExifThumbnail(byte[] exif) {
+    // Returns a copy of a HEIF Exif item with (1) the TIFF IFD0 next-IFD pointer zeroed (removing
+    // the stale unfiltered IFD1 JPEG thumbnail) and (2) all APP2 "XMTH" segments removed (Xiaomi
+    // Gallery's stale unfiltered 0.7-1.2 MB quick-view JPEG). All other segments (APP1 Exif,
+    // ICC_PROFILE, OISINFO, XMI Camera) are kept intact.
+    static byte[] stripExifThumbnail(byte[] exif) {
         if (exif == null || exif.length < 24) {
-            return;
+            return exif;
         }
-        int off = (int) u32(exif, 0);
+        byte[] copy = Arrays.copyOf(exif, exif.length);
+        int off = (int) u32(copy, 0);
         int tiff = 4 + off;
-        if (tiff < 4 || tiff + 8 > exif.length) {
-            return;
+        if (tiff >= 4 && tiff + 8 <= copy.length) {
+            boolean bigEndian = copy[tiff] == 'M' && copy[tiff + 1] == 'M';
+            boolean littleEndian = copy[tiff] == 'I' && copy[tiff + 1] == 'I';
+            if (bigEndian || littleEndian) {
+                int magic = bigEndian ? (int) u16(copy, tiff + 2)
+                        : ((copy[tiff + 2] & 0xFF) | ((copy[tiff + 3] & 0xFF) << 8));
+                if (magic == 42) {
+                    int ifd0Off = bigEndian ? (int) u32(copy, tiff + 4)
+                            : ((copy[tiff + 4] & 0xFF) | ((copy[tiff + 5] & 0xFF) << 8)
+                            | ((copy[tiff + 6] & 0xFF) << 16) | ((copy[tiff + 7] & 0xFF) << 24));
+                    int ifd0 = tiff + ifd0Off;
+                    if (ifd0 >= tiff && ifd0 + 2 <= copy.length) {
+                        int entries = bigEndian ? (int) u16(copy, ifd0)
+                                : ((copy[ifd0] & 0xFF) | ((copy[ifd0 + 1] & 0xFF) << 8));
+                        int nextIfdPos = ifd0 + 2 + entries * 12;
+                        if (nextIfdPos + 4 <= copy.length) {
+                            copy[nextIfdPos] = 0;
+                            copy[nextIfdPos + 1] = 0;
+                            copy[nextIfdPos + 2] = 0;
+                            copy[nextIfdPos + 3] = 0;
+                        }
+                    }
+                }
+            }
         }
-        boolean bigEndian;
-        if (exif[tiff] == 'M' && exif[tiff + 1] == 'M') {
-            bigEndian = true;
-        } else if (exif[tiff] == 'I' && exif[tiff + 1] == 'I') {
-            bigEndian = false;
-        } else {
-            return;
+        // Strip APP2 (0xFFE2) segments whose payload starts with "XMTH"
+        if (copy[4] != (byte) 0xFF) {
+            return copy;
         }
-        int magic = bigEndian ? (int) u16(exif, tiff + 2)
-                : ((exif[tiff + 2] & 0xFF) | ((exif[tiff + 3] & 0xFF) << 8));
-        if (magic != 42) {
-            return;
+        ByteArrayOutputStream out = new ByteArrayOutputStream(copy.length);
+        out.write(copy, 0, 4);
+        int pos = 4;
+        boolean strippedAny = false;
+        while (pos + 4 <= copy.length && copy[pos] == (byte) 0xFF) {
+            int marker = copy[pos + 1] & 0xFF;
+            int segLen = (int) u16(copy, pos + 2);
+            int total = 2 + segLen;
+            if (segLen < 2 || pos + total > copy.length) {
+                return copy;   // unexpected layout, leave segments untouched
+            }
+            boolean isXmth = marker == 0xE2 && segLen >= 6
+                    && copy[pos + 4] == 'X' && copy[pos + 5] == 'M'
+                    && copy[pos + 6] == 'T' && copy[pos + 7] == 'H';
+            if (isXmth) {
+                strippedAny = true;
+            } else {
+                out.write(copy, pos, total);
+            }
+            pos += total;
         }
-        int ifd0Off = bigEndian ? (int) u32(exif, tiff + 4)
-                : ((exif[tiff + 4] & 0xFF) | ((exif[tiff + 5] & 0xFF) << 8)
-                | ((exif[tiff + 6] & 0xFF) << 16) | ((exif[tiff + 7] & 0xFF) << 24));
-        int ifd0 = tiff + ifd0Off;
-        if (ifd0 < tiff || ifd0 + 2 > exif.length) {
-            return;
+        if (pos < copy.length) {
+            out.write(copy, pos, copy.length - pos);
         }
-        int entries = bigEndian ? (int) u16(exif, ifd0)
-                : ((exif[ifd0] & 0xFF) | ((exif[ifd0 + 1] & 0xFF) << 8));
-        int nextIfdPos = ifd0 + 2 + entries * 12;
-        if (nextIfdPos + 4 > exif.length) {
-            return;
-        }
-        exif[nextIfdPos] = 0;
-        exif[nextIfdPos + 1] = 0;
-        exif[nextIfdPos + 2] = 0;
-        exif[nextIfdPos + 3] = 0;
+        return strippedAny ? out.toByteArray() : copy;
     }
 
     // Returns true if the HEIC already contains an "edit" item in iinf.

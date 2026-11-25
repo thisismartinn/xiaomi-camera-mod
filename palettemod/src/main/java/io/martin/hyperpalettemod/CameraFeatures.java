@@ -234,8 +234,7 @@ final class CameraFeatures {
                         probe.cameraLoader(), file, style);
                 if (rendered != null) {
                     outer = rendered;
-                    extraExif = ReEditInjector.extractExif(file);
-                    ReEditInjector.stripExifThumbnail(extraExif);
+                    extraExif = ReEditInjector.stripExifThumbnail(ReEditInjector.extractExif(file));
                     outerRendered = true;
                 }
             }
