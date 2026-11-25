@@ -122,6 +122,50 @@ final class ReEditInjector {
         return null;
     }
 
+    // Returns true if the HEIC already contains an "edit" item in iinf.
+    static boolean hasEdit(byte[] file) {
+        try {
+            List<Box> top = boxes(file, 0, file.length);
+            Box meta = null;
+            for (Box box : top) {
+                if (box.type == META) {
+                    meta = box;
+                    break;
+                }
+            }
+            if (meta == null) {
+                return false;
+            }
+            Box iinf = null;
+            for (Box kid : boxes(file, meta.start + meta.header + 4, meta.end())) {
+                if (kid.type == IINF) {
+                    iinf = kid;
+                    break;
+                }
+            }
+            if (iinf == null) {
+                return false;
+            }
+            int iinfVer = file[iinf.start + iinf.header] & 0xFF;
+            int entriesAt = iinf.start + iinf.header + 4 + (iinfVer == 0 ? 2 : 4);
+            for (Box infe : boxes(file, entriesAt, iinf.end())) {
+                if (infe.type != INFE) {
+                    continue;
+                }
+                int ver = file[infe.start + infe.header] & 0xFF;
+                if (ver < 2) {
+                    continue;
+                }
+                int p = infe.start + infe.header + 4 + (ver == 2 ? 2 : 4) + 2;
+                if ((int) u32(file, p) == EDIT) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
     // The photo's own camera filter id, read from the camera's private JSON in the Exif item
     // ({"mirror":false,...,"filterId":655608,...}), or -1.
     static int cameraFilterId(byte[] file) {

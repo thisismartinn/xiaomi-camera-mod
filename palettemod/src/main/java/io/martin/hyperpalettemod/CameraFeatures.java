@@ -200,6 +200,12 @@ final class CameraFeatures {
         if (!ReEditInjector.isHeic(file)) {
             return null;
         }
+        if (ReEditInjector.hasEdit(file)) {
+            if (seen.get() <= 8) {
+                module.log(Log.INFO, TAG, "re-edit data already in the photo (" + path + ")");
+            }
+            return null;
+        }
         int cameraFilter = ReEditInjector.cameraFilterId(file);
         if (mode == Settings.MODE_FILTERED
                 && (cameraFilter < 0 || cameraFilter == ReEditInjector.FILTER_STANDARD)) {

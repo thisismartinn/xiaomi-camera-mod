@@ -42,7 +42,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.2.8-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.2.9-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -69,10 +69,9 @@ jobs:
           cat > notes.md <<'EOF'
           **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
 
-          **New in 0.2.8:**
-          - **Outer filtered HEIC rendering (`OuterRenderer`):** When the experimental toggle is on, renders the camera's live filter + Palette onto the outer HEIC using the camera's own `CandySDK` + `HeifWriter`, copies the original `Exif` item byte-for-byte, and embeds the unfiltered HEIC inside `edit` — so Gallery shows the filtered photo **and** Media Editor re-edits it non-destructively!
-          - **Filter ID + prefix fixes from 17U Media Editor:** Remaps legacy Leica IDs (`2->140` VIV, `3->141` NAT, `5->149` HC, `7->151` BLU) and applies the exact per-filter Leica/film/non-Leica prefix map (including R600 `101` and P100F `138`, and no Leica prefix for non-Leica filters like IA).
+          **New in 0.2.9:**
+          - Fixes the infinite re-render / OOM / double-applied Palette bug from 0.2.8: checks `ReEditInjector.hasEdit(file)` **before** calling `OuterRenderer.render(...)` so `FileObserver` write-backs never re-render and re-wrap an already-processed photo!
           EOF
-          gh release create "draft-v0.2.8.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.2.9.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.2.8 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.2.9 (Media Editor + Camera)" --notes-file notes.md
