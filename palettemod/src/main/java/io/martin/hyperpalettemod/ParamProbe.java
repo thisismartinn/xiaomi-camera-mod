@@ -1,10 +1,12 @@
 package io.martin.hyperpalettemod;
 
+import android.media.Image;
 import android.util.Log;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.libxposed.api.XposedModule;
@@ -21,14 +23,24 @@ final class ParamProbe {
 
     private final XposedModule module;
     private final AtomicInteger lines = new AtomicInteger();
+    private final AtomicInteger filterProcLines = new AtomicInteger();
+    private final ConcurrentHashMap<Integer, Integer> filterMap = new ConcurrentHashMap<>();
     private volatile String last;
 
     ParamProbe(XposedModule module) {
         this.module = module;
     }
 
+    // Returns the editor's mGeneralFilterId learned from MIVIRenderTag for a given camera filterId,
+    // or -1 if not seen yet.
+    int editorFilterId(int cameraFilterId) {
+        Integer id = filterMap.get(cameraFilterId);
+        return id != null ? id : -1;
+    }
+
     void install(ClassLoader loader) {
         installTag(loader);
+        installFilterProcessorProbe(loader);
         try {
             Class<?> candy = Class.forName(CANDY, false, loader);
             Method target = null;
@@ -80,10 +92,48 @@ final class ParamProbe {
         }
     }
 
-    private void dumpTag(Object tag) throws Exception {
-        if (lines.get() >= MAX_LINES) {
-            return;
+    // Read-only probe on FilterProcessor (di.g.a in Camera 6.7.000500.0) to confirm whether the
+    // unfiltered full-res android.media.Image passes through Java before the filter is applied.
+    private void installFilterProcessorProbe(ClassLoader loader) {
+        try {
+            Class<?> fp = Class.forName("di.g", false, loader);
+            Method target = null;
+            for (Method m : fp.getDeclaredMethods()) {
+                Class<?>[] p = m.getParameterTypes();
+                if (m.getName().equals("a") && p.length == 5 && p[1] == Image.class
+                        && p[2] == int.class && p[3] == boolean.class) {
+                    target = m;
+                    break;
+                }
+            }
+            if (target == null) {
+                throw new NoSuchMethodException("di.g.a(di.r, Image, int, boolean, di.j)");
+            }
+            module.hook(target).intercept(chain -> {
+                try {
+                    if (filterProcLines.incrementAndGet() <= 16) {
+                        Object imgObj = chain.getArg(1);
+                        String imgDesc = imgObj instanceof Image img
+                                ? img.getWidth() + "x" + img.getHeight() + " fmt=" + img.getFormat()
+                                : String.valueOf(imgObj);
+                        module.log(Log.INFO, TAG, "FilterProcessor di.g.a fired: image=" + imgDesc
+                                + " resultType=" + chain.getArg(2)
+                                + " swapUv=" + chain.getArg(3));
+                    }
+                } catch (Throwable t) {
+                    // diagnostics must never disturb the camera
+                }
+                return chain.proceed();
+            });
+            module.log(Log.INFO, TAG, "probing FilterProcessor di.g.a (read only)");
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "cannot probe FilterProcessor di.g.a: " + t);
         }
+    }
+
+    private void dumpTag(Object tag) throws Exception {
+        int camId = -1;
+        int genId = -1;
         StringBuilder sb = new StringBuilder();
         for (Field f : tag.getClass().getDeclaredFields()) {
             if (Modifier.isStatic(f.getModifiers())) {
@@ -94,6 +144,11 @@ final class ParamProbe {
                     || java.util.List.class.isAssignableFrom(t)) {
                 f.setAccessible(true);
                 Object v = f.get(tag);
+                if ("mFilterId".equals(f.getName()) && v instanceof Integer i) {
+                    camId = i;
+                } else if ("mGeneralFilterId".equals(f.getName()) && v instanceof Integer i) {
+                    genId = i;
+                }
                 if (v instanceof java.util.List<?> list) {
                     sb.append(f.getName()).append("=[");
                     for (Object o : list) {
@@ -104,6 +159,12 @@ final class ParamProbe {
                     sb.append(f.getName()).append('=').append(v).append(' ');
                 }
             }
+        }
+        if (camId > 0 && genId > 0) {
+            filterMap.put(camId, genId);
+        }
+        if (lines.get() >= MAX_LINES) {
+            return;
         }
         String text = sb.toString().trim();
         if (text.equals(last)) {

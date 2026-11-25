@@ -57,6 +57,7 @@ final class CameraFeatures {
 
     private final XposedModule module;
     private final Config config;
+    private final ParamProbe probe;
     private volatile boolean hooked;
     private final AtomicInteger seen = new AtomicInteger();
     private final AtomicBoolean logged = new AtomicBoolean();
@@ -66,6 +67,7 @@ final class CameraFeatures {
     CameraFeatures(XposedModule module, Config config) {
         this.module = module;
         this.config = config;
+        this.probe = new ParamProbe(module);
     }
 
     void install(String stage, ClassLoader loader) {
@@ -73,7 +75,7 @@ final class CameraFeatures {
             return;
         }
         installWatcher();
-        new ParamProbe(module).install(loader);
+        probe.install(loader);
         for (SaveProfile profile : SAVE_PROFILES) {
             int hooks = 0;
             try {
@@ -207,14 +209,18 @@ final class CameraFeatures {
             }
             return null;
         }
-        int filter = cameraFilter == ReEditInjector.CAMERA_CHROME ? ReEditInjector.EDITOR_CHROME
-                : config.cameraFilter();
+        int learned = probe.editorFilterId(cameraFilter);
+        int filter = learned > 0 ? learned
+                : (cameraFilter == ReEditInjector.CAMERA_CHROME ? ReEditInjector.EDITOR_CHROME
+                : config.cameraFilter());
+        boolean nativeStyle = learned > 0 || cameraFilter == ReEditInjector.CAMERA_CHROME;
         try {
-            byte[] injected = ReEditInjector.inject(file, filter, 0);
+            byte[] injected = ReEditInjector.inject(file, filter, 0, nativeStyle);
             if (injected != null && logged.compareAndSet(false, true)) {
                 module.log(Log.INFO, TAG, "added re-edit data on the " + path + " (camera filter "
-                        + cameraFilter + ", editor filter " + filter + ", +"
-                        + (injected.length - file.length) + " bytes); logging the first photo only");
+                        + cameraFilter + ", editor filter " + filter + ", native=" + nativeStyle
+                        + ", +" + (injected.length - file.length)
+                        + " bytes); logging the first photo only");
             }
             if (injected == null && seen.get() <= 8) {
                 module.log(Log.INFO, TAG, "re-edit data already in the photo (" + path + ")");

@@ -97,6 +97,11 @@ final class ReEditInjector {
     // Throws IOException when the file is not laid out as expected; the caller then keeps the
     // original untouched.
     static byte[] inject(byte[] file, int editorFilterId, int progress) throws IOException {
+        return inject(file, editorFilterId, progress, editorFilterId == EDITOR_CHROME);
+    }
+
+    static byte[] inject(byte[] file, int editorFilterId, int progress, boolean nativeStyle)
+            throws IOException {
         List<Box> top = boxes(file, 0, file.length);
         Box meta = null;
         for (Box box : top) {
@@ -194,7 +199,7 @@ final class ReEditInjector {
         }
 
         // ---- the new data ----
-        byte[] edit = buildEdit(file, editorFilterId, progress);
+        byte[] edit = buildEdit(file, editorFilterId, progress, nativeStyle);
         byte[] xmp;
         if (xmpId >= 0) {
             Extent e = xmpItem.extents.get(0);
@@ -322,8 +327,8 @@ final class ReEditInjector {
 
     // ---- what the editor reads ---------------------------------------------------------------
 
-    private static byte[] buildEdit(byte[] image, int filterId, int progress) throws IOException {
-        boolean nativeStyle = filterId == EDITOR_CHROME;
+    private static byte[] buildEdit(byte[] image, int filterId, int progress, boolean nativeStyle)
+            throws IOException {
         ByteArrayOutputStream filter = new ByteArrayOutputStream();
         putVarint(filter, 1, filterId);
         putVarint(filter, 2, nativeStyle ? 100 : progress);
