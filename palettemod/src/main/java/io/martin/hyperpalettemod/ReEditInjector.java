@@ -122,11 +122,14 @@ final class ReEditInjector {
         return null;
     }
 
-    // Returns a copy of a HEIF Exif item with (1) the TIFF IFD0 next-IFD pointer zeroed (removing
-    // the stale unfiltered IFD1 JPEG thumbnail) and (2) all APP2 "XMTH" segments removed (Xiaomi
-    // Gallery's stale unfiltered 0.7-1.2 MB quick-view JPEG). All other segments (APP1 Exif,
-    // ICC_PROFILE, OISINFO, XMI Camera) are kept intact.
+    // Returns a copy of a HEIF Exif item with (1) the EXIF IFD1 JPEG thumbnail replaced in-place
+    // with filteredThumbJpeg if it fits (or IFD1 detached if not) and (2) all APP2 "XMTH" segments
+    // removed (Xiaomi Gallery's stale unfiltered quick-view JPEG).
     static byte[] stripExifThumbnail(byte[] exif) {
+        return stripExifThumbnail(exif, null);
+    }
+
+    static byte[] stripExifThumbnail(byte[] exif, byte[] filteredThumbJpeg) {
         if (exif == null || exif.length < 24) {
             return exif;
         }
@@ -137,22 +140,23 @@ final class ReEditInjector {
             boolean bigEndian = copy[tiff] == 'M' && copy[tiff + 1] == 'M';
             boolean littleEndian = copy[tiff] == 'I' && copy[tiff + 1] == 'I';
             if (bigEndian || littleEndian) {
-                int magic = bigEndian ? (int) u16(copy, tiff + 2)
-                        : ((copy[tiff + 2] & 0xFF) | ((copy[tiff + 3] & 0xFF) << 8));
+                int magic = tiffU16(copy, tiff + 2, bigEndian);
                 if (magic == 42) {
-                    int ifd0Off = bigEndian ? (int) u32(copy, tiff + 4)
-                            : ((copy[tiff + 4] & 0xFF) | ((copy[tiff + 5] & 0xFF) << 8)
-                            | ((copy[tiff + 6] & 0xFF) << 16) | ((copy[tiff + 7] & 0xFF) << 24));
-                    int ifd0 = tiff + ifd0Off;
+                    int ifd0 = tiff + tiffU32(copy, tiff + 4, bigEndian);
                     if (ifd0 >= tiff && ifd0 + 2 <= copy.length) {
-                        int entries = bigEndian ? (int) u16(copy, ifd0)
-                                : ((copy[ifd0] & 0xFF) | ((copy[ifd0 + 1] & 0xFF) << 8));
+                        int entries = tiffU16(copy, ifd0, bigEndian);
                         int nextIfdPos = ifd0 + 2 + entries * 12;
                         if (nextIfdPos + 4 <= copy.length) {
-                            copy[nextIfdPos] = 0;
-                            copy[nextIfdPos + 1] = 0;
-                            copy[nextIfdPos + 2] = 0;
-                            copy[nextIfdPos + 3] = 0;
+                            int ifd1Off = tiffU32(copy, nextIfdPos, bigEndian);
+                            boolean replaced = ifd1Off > 0 && filteredThumbJpeg != null
+                                    && replaceIfd1Thumb(copy, tiff, tiff + ifd1Off, bigEndian,
+                                    filteredThumbJpeg);
+                            if (!replaced) {
+                                copy[nextIfdPos] = 0;
+                                copy[nextIfdPos + 1] = 0;
+                                copy[nextIfdPos + 2] = 0;
+                                copy[nextIfdPos + 3] = 0;
+                            }
                         }
                     }
                 }
@@ -187,6 +191,62 @@ final class ReEditInjector {
             out.write(copy, pos, copy.length - pos);
         }
         return strippedAny ? out.toByteArray() : copy;
+    }
+
+    private static boolean replaceIfd1Thumb(byte[] d, int tiff, int ifd1, boolean bigEndian,
+                                            byte[] thumb) {
+        if (ifd1 < tiff || ifd1 + 2 > d.length) {
+            return false;
+        }
+        int n = tiffU16(d, ifd1, bigEndian);
+        if (ifd1 + 2 + n * 12 > d.length) {
+            return false;
+        }
+        int jpegOff = -1;
+        int jpegLen = -1;
+        int lenValPos = -1;
+        for (int i = 0; i < n; i++) {
+            int p = ifd1 + 2 + i * 12;
+            int tag = tiffU16(d, p, bigEndian);
+            if (tag == 0x0201) {
+                jpegOff = tiffU32(d, p + 8, bigEndian);
+            } else if (tag == 0x0202) {
+                jpegLen = tiffU32(d, p + 8, bigEndian);
+                lenValPos = p + 8;
+            }
+        }
+        if (jpegOff <= 0 || jpegLen <= 0 || lenValPos < 0 || thumb.length > jpegLen) {
+            return false;
+        }
+        int dst = tiff + jpegOff;
+        if (dst < tiff || dst + jpegLen > d.length) {
+            return false;
+        }
+        System.arraycopy(thumb, 0, d, dst, thumb.length);
+        putTiffU32(d, lenValPos, thumb.length, bigEndian);
+        return true;
+    }
+
+    private static int tiffU16(byte[] d, int p, boolean bigEndian) {
+        return bigEndian ? (int) u16(d, p)
+                : ((d[p] & 0xFF) | ((d[p + 1] & 0xFF) << 8));
+    }
+
+    private static int tiffU32(byte[] d, int p, boolean bigEndian) {
+        return bigEndian ? (int) u32(d, p)
+                : ((d[p] & 0xFF) | ((d[p + 1] & 0xFF) << 8)
+                | ((d[p + 2] & 0xFF) << 16) | ((d[p + 3] & 0xFF) << 24));
+    }
+
+    private static void putTiffU32(byte[] d, int p, int v, boolean bigEndian) {
+        if (bigEndian) {
+            putU32(d, p, v);
+        } else {
+            d[p] = (byte) v;
+            d[p + 1] = (byte) (v >>> 8);
+            d[p + 2] = (byte) (v >>> 16);
+            d[p + 3] = (byte) (v >>> 24);
+        }
     }
 
     // Returns true if the HEIC already contains an "edit" item in iinf.

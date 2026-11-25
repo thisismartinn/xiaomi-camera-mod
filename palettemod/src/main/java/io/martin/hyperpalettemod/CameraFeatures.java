@@ -409,11 +409,12 @@ final class CameraFeatures {
             byte[] extraExif = null;
             boolean outerRendered = false;
             if (useLive && style.candyParam() != null) {
-                byte[] rendered = OuterRenderer.render(module, currentApplication(),
+                OuterRenderer.Result rendered = OuterRenderer.render(module, currentApplication(),
                         probe.cameraLoader(), file, style);
                 if (rendered != null) {
-                    outer = rendered;
-                    extraExif = ReEditInjector.stripExifThumbnail(ReEditInjector.extractExif(file));
+                    outer = rendered.heic();
+                    extraExif = ReEditInjector.stripExifThumbnail(
+                            ReEditInjector.extractExif(file), rendered.thumbJpeg());
                     outerRendered = true;
                 }
             }
