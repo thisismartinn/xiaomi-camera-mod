@@ -342,32 +342,32 @@ final class CameraFeatures {
                 boolean hadStyle = false;
                 if (thumb != null && config.cameraMode() != Settings.MODE_OFF
                         && config.cameraJavaFilter()) {
-                    Bitmap override = lastUiThumb;
-                    boolean fresh = override != null && !override.isRecycled()
-                            && (System.currentTimeMillis() - lastUiThumbMs) < 4000;
-                    if (fresh) {
+                    ParamProbe.CaptureStyle style = probe.consumeThumbStyle(5000);
+                    hadStyle = style != null && style.candyParam() != null;
+                    if (hadStyle) {
                         try {
-                            bmpField.set(thumb, override);
-                            swapped = true;
+                            Object bObj = bmpField.get(thumb);
+                            if (bObj instanceof Bitmap src && !src.isRecycled()) {
+                                Bitmap filtered = OuterRenderer.filterBitmap(module,
+                                        probe.cameraLoader(), src, style);
+                                if (filtered != null) {
+                                    bmpField.set(thumb, filtered);
+                                    filteredInPlace = true;
+                                    lastUiThumb = filtered;
+                                    lastUiThumbMs = System.currentTimeMillis();
+                                    lastInPlaceThumbMs = lastUiThumbMs;
+                                }
+                            }
                         } catch (Throwable ignored) {
                         }
                     } else {
-                        ParamProbe.CaptureStyle style = probe.consumeThumbStyle(5000);
-                        hadStyle = style != null && style.candyParam() != null;
-                        if (hadStyle) {
+                        Bitmap override = lastUiThumb;
+                        boolean fresh = override != null && !override.isRecycled()
+                                && (System.currentTimeMillis() - lastUiThumbMs) < 1500;
+                        if (fresh) {
                             try {
-                                Object bObj = bmpField.get(thumb);
-                                if (bObj instanceof Bitmap src && !src.isRecycled()) {
-                                    Bitmap filtered = OuterRenderer.filterBitmap(module,
-                                            probe.cameraLoader(), src, style);
-                                    if (filtered != null) {
-                                        bmpField.set(thumb, filtered);
-                                        filteredInPlace = true;
-                                        lastUiThumb = filtered;
-                                        lastUiThumbMs = System.currentTimeMillis();
-                                        lastInPlaceThumbMs = lastUiThumbMs;
-                                    }
-                                }
+                                bmpField.set(thumb, override);
+                                swapped = true;
                             } catch (Throwable ignored) {
                             }
                         }

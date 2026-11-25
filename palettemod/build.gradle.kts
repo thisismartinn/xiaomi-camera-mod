@@ -12,7 +12,7 @@ android {
         minSdk = 30
         targetSdk = 37
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "0.3.8-draft"
+        versionName = "0.3.9-draft"
     }
 
     val keystorePath = System.getenv("KEYSTORE_FILE")
