@@ -21,6 +21,8 @@ import android.widget.Toast;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -106,6 +108,10 @@ public class ModuleMain extends XposedModule {
     private volatile boolean assetsHooked;
     private volatile boolean styleHooked;
     private volatile boolean textHooked;
+    private volatile boolean portraitEvHooked;
+    private volatile boolean ringPortraitEvHooked;
+    private final AtomicBoolean firstPortraitEvLogged = new AtomicBoolean();
+    private final AtomicBoolean firstRingEvLogged = new AtomicBoolean();
 
     @Override
     public void onPackageLoaded(PackageLoadedParam param) {
@@ -137,6 +143,8 @@ public class ModuleMain extends XposedModule {
         installStylizationHook();
         installLegendHook(loader);
         installStyleHook(loader);
+        installPortraitEvHook(stage, loader);
+        installRingPortraitEvHook(stage, loader);
         if (!problems.isEmpty() && stage.equals("onPackageLoaded")) {
             // onPackageReady tries once more; report only what is still wrong after it
             problems.clear();
@@ -866,6 +874,262 @@ public class ModuleMain extends XposedModule {
             }
         }
         return new BitmapDrawable(resources, bitmap);
+    }
+
+    // ---- 5. Portrait Mode EV & Camera Ring Portrait EV ---------------------------------------
+
+    private record PortraitEvProfile(String name, String featureClass, String portraitEvMethod) {
+    }
+
+    private static final PortraitEvProfile[] PORTRAIT_EV_PROFILES = {
+            // Camera 6.7 (HyperOS 4, Xiaomi 17 Ultra 6.7.000500.0)
+            new PortraitEvProfile("6.7", "Te.b", "d2"),
+            // Camera 6.8 (Xiaomi 18 Pro 6.8.002090.2)
+            new PortraitEvProfile("6.8", "Pe.b", "k2"),
+    };
+
+    private static final String[] VALUE_LIST_FACTORY_CLASSES = {
+            "com.android.camera.fragment.settings.h",
+    };
+    private static final String RING_PORTRAIT_KEY = "pref_camera_handle_ring_function_mode_171";
+    private static final String RING_PHOTO_KEY = "pref_camera_handle_ring_function_mode_163";
+    private static final String ATTR_EV = "attr_ev";
+    private static final String ATTR_ZOOM_SEGMENT = "attr_zoom_segment";
+
+    private void installPortraitEvHook(String stage, ClassLoader loader) {
+        if (portraitEvHooked) {
+            return;
+        }
+        for (PortraitEvProfile profile : PORTRAIT_EV_PROFILES) {
+            if (tryHookPortraitEvProfile(stage, loader, profile)) {
+                portraitEvHooked = true;
+                return;
+            }
+        }
+        log(Log.WARN, TAG, stage + ": no matching DataItemFeature portrait EV profile found");
+    }
+
+    private boolean tryHookPortraitEvProfile(
+            String stage, ClassLoader loader, PortraitEvProfile profile) {
+        Class<?> featureClass;
+        try {
+            featureClass = Class.forName(profile.featureClass(), false, loader);
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+        if (!looksLikeDataItemFeature(featureClass, loader)) {
+            return false;
+        }
+        Method target;
+        try {
+            target = featureClass.getDeclaredMethod(profile.portraitEvMethod());
+        } catch (NoSuchMethodException e) {
+            return false;
+        }
+        if (target.getReturnType() != boolean.class || Modifier.isStatic(target.getModifiers())) {
+            return false;
+        }
+        try {
+            hook(target).intercept(chain -> {
+                if (firstPortraitEvLogged.compareAndSet(false, true)) {
+                    log(Log.INFO, TAG, "intercepted " + profile.featureClass() + "."
+                            + profile.portraitEvMethod() + "() -> true");
+                }
+                return true;
+            });
+            log(Log.INFO, TAG, stage + ": hooked " + profile.featureClass() + "."
+                    + profile.portraitEvMethod() + "() [portrait EV, profile " + profile.name() + "]");
+            return true;
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, stage + ": failed to hook " + profile.featureClass() + "."
+                    + profile.portraitEvMethod() + "(): " + t);
+            return false;
+        }
+    }
+
+    private static boolean looksLikeDataItemFeature(Class<?> cls, ClassLoader loader) {
+        try {
+            Class<?> holder = Class.forName(cls.getName() + "$b", false, loader);
+            for (Field f : holder.getDeclaredFields()) {
+                if (Modifier.isStatic(f.getModifiers()) && f.getType() == cls) {
+                    return true;
+                }
+            }
+        } catch (ClassNotFoundException ignored) {
+        }
+        return false;
+    }
+
+    private void installRingPortraitEvHook(String stage, ClassLoader loader) {
+        if (ringPortraitEvHooked) {
+            return;
+        }
+        for (String className : VALUE_LIST_FACTORY_CLASSES) {
+            Class<?> factoryClass;
+            try {
+                factoryClass = Class.forName(className, false, loader);
+            } catch (ClassNotFoundException e) {
+                continue;
+            }
+            Method factoryMethod = findValueListFactoryMethod(factoryClass);
+            if (factoryMethod == null) {
+                continue;
+            }
+            try {
+                hook(factoryMethod).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (result != null && RING_PORTRAIT_KEY.equals(chain.getArg(0))) {
+                        try {
+                            injectEvIntoPortraitRingData(factoryMethod, result);
+                        } catch (Throwable t) {
+                            log(Log.WARN, TAG, "failed to inject EV into Portrait ring list: " + t);
+                        }
+                    }
+                    return result;
+                });
+                ringPortraitEvHooked = true;
+                log(Log.INFO, TAG, stage + ": hooked " + className + "."
+                        + factoryMethod.getName() + "(String) for Portrait camera ring EV");
+                return;
+            } catch (Throwable t) {
+                log(Log.WARN, TAG, stage + ": failed to hook " + className + "."
+                        + factoryMethod.getName() + "(String): " + t);
+            }
+        }
+        log(Log.WARN, TAG, stage + ": ValueListDataFactory not found; Portrait camera ring EV skipped");
+    }
+
+    private static Method findValueListFactoryMethod(Class<?> factoryClass) {
+        for (Method m : factoryClass.getDeclaredMethods()) {
+            if (!Modifier.isStatic(m.getModifiers())) {
+                continue;
+            }
+            Class<?>[] params = m.getParameterTypes();
+            if (params.length != 1 || params[0] != String.class) {
+                continue;
+            }
+            Class<?> ret = m.getReturnType();
+            if (ret.isPrimitive() || ret == Object.class || ret == String.class) {
+                continue;
+            }
+            int stringArrayFields = 0;
+            for (Field f : ret.getDeclaredFields()) {
+                if (!Modifier.isStatic(f.getModifiers()) && f.getType() == String[].class) {
+                    stringArrayFields++;
+                }
+            }
+            if (stringArrayFields >= 2) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    private void injectEvIntoPortraitRingData(Method factoryMethod, Object portraitData)
+            throws Exception {
+        Field[] pair = findEntriesAndValuesFields(portraitData);
+        if (pair == null) {
+            log(Log.WARN, TAG, "could not identify entries/entryValues fields on "
+                    + portraitData.getClass().getName());
+            return;
+        }
+        Field entriesField = pair[0];
+        Field valuesField = pair[1];
+        String[] entries = (String[]) entriesField.get(portraitData);
+        String[] values = (String[]) valuesField.get(portraitData);
+        if (entries == null || values == null || entries.length != values.length) {
+            return;
+        }
+        for (String v : values) {
+            if (ATTR_EV.equals(v)) {
+                return;
+            }
+        }
+
+        String evLabel = lookupLocalizedEvLabel(factoryMethod, entriesField, valuesField);
+        if (evLabel == null) {
+            evLabel = "EV";
+        }
+
+        int insertAt = values.length;
+        for (int i = 0; i < values.length; i++) {
+            if (ATTR_ZOOM_SEGMENT.equals(values[i])) {
+                insertAt = i + 1;
+                break;
+            }
+        }
+
+        String[] newEntries = insertAt(entries, insertAt, evLabel);
+        String[] newValues = insertAt(values, insertAt, ATTR_EV);
+        entriesField.set(portraitData, newEntries);
+        valuesField.set(portraitData, newValues);
+
+        if (firstRingEvLogged.compareAndSet(false, true)) {
+            log(Log.INFO, TAG, "added '" + evLabel + "' (" + ATTR_EV
+                    + ") to Portrait camera ring options -> " + Arrays.toString(newValues));
+        }
+    }
+
+    private static Field[] findEntriesAndValuesFields(Object data) throws IllegalAccessException {
+        Field valuesField = null;
+        Field entriesField = null;
+        for (Field f : data.getClass().getDeclaredFields()) {
+            if (Modifier.isStatic(f.getModifiers()) || f.getType() != String[].class) {
+                continue;
+            }
+            f.setAccessible(true);
+            String[] arr = (String[]) f.get(data);
+            if (arr == null || arr.length == 0) {
+                continue;
+            }
+            boolean looksLikeValues = false;
+            for (String s : arr) {
+                if (s != null && s.startsWith("attr_")) {
+                    looksLikeValues = true;
+                    break;
+                }
+            }
+            if (looksLikeValues) {
+                valuesField = f;
+            } else if (entriesField == null) {
+                entriesField = f;
+            }
+        }
+        return (entriesField != null && valuesField != null)
+                ? new Field[]{entriesField, valuesField}
+                : null;
+    }
+
+    private static String lookupLocalizedEvLabel(
+            Method factoryMethod, Field entriesField, Field valuesField) {
+        try {
+            factoryMethod.setAccessible(true);
+            Object photoData = factoryMethod.invoke(null, RING_PHOTO_KEY);
+            if (photoData == null) {
+                return null;
+            }
+            String[] photoEntries = (String[]) entriesField.get(photoData);
+            String[] photoValues = (String[]) valuesField.get(photoData);
+            if (photoEntries == null || photoValues == null
+                    || photoEntries.length != photoValues.length) {
+                return null;
+            }
+            for (int i = 0; i < photoValues.length; i++) {
+                if (ATTR_EV.equals(photoValues[i])) {
+                    return photoEntries[i];
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static String[] insertAt(String[] src, int index, String item) {
+        String[] dst = new String[src.length + 1];
+        System.arraycopy(src, 0, dst, 0, index);
+        dst[index] = item;
+        System.arraycopy(src, index, dst, index + 1, src.length - index);
+        return dst;
     }
 
     // ---- telling the user ---------------------------------------------------------------------
