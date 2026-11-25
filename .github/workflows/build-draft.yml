@@ -36,13 +36,26 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Decode release keystore (if configured)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          fi
+
       - name: Build
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew --no-daemon :palettemod:assembleRelease
 
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.3.6-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.3.7-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -69,10 +82,11 @@ jobs:
           cat > notes.md <<'EOF'
           **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
 
-          **New in 0.3.6:**
-          - Filters Camera's tiny shutter thumbnail (`F1.i4.b`) in-place inside `FragmentBottomAction.updateThumbnail` (`A4.v1.v0`) using CandySDK before it renders, eliminating the 1-second unfiltered flash and fixing the 90° tilt.
-          - Logs which save hook triggered `OuterRenderer` so we can eliminate any duplicate render pass.
+          **New in 0.3.7:**
+          - Drops the `transition=true` requirement in `A4.v1.v0` (17U passes `transition=false` on shutter) and uses a one-shot `consumeThumbStyle` so each filtered capture filters its shutter thumbnail in-place immediately without affecting startup thumbnails.
+          - Defaults **"Render filtered outer photo"** (`CAMERA_JAVA_FILTER`) to ON so fresh installs work out of the box.
+          - Supports persistent release signing via GitHub Actions secrets + auto-incrementing `versionCode` for in-place updates.
           EOF
-          gh release create "draft-v0.3.6.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.3.7.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.3.6 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.3.7 (Media Editor + Camera)" --notes-file notes.md

@@ -23,7 +23,7 @@ final class Settings {
     static final String CAMERA_FILTER = "camera_filter_id";      // editor filter the data names
     static final int CAMERA_FILTER_DEFAULT = 58;
     static final String CAMERA_JAVA_FILTER = "camera_java_filter";
-    static final boolean CAMERA_JAVA_FILTER_DEFAULT = false;
+    static final boolean CAMERA_JAVA_FILTER_DEFAULT = true;
 
     private Settings() {
     }

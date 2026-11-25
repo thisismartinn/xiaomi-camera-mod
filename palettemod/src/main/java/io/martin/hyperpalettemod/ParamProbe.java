@@ -56,11 +56,13 @@ final class ParamProbe {
         return styleMap.get(cameraFilterId);
     }
 
-    CaptureStyle latestStyle(long maxAgeMs) {
+    synchronized CaptureStyle consumeThumbStyle(long maxAgeMs) {
         CaptureStyle s = latestStyle;
         if (s == null || (System.currentTimeMillis() - latestStyleMs) > maxAgeMs) {
             return null;
         }
+        latestStyle = null;
+        latestStyleMs = 0;
         return s;
     }
 

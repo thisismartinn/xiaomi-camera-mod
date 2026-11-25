@@ -339,6 +339,7 @@ final class CameraFeatures {
                 boolean transition = Boolean.TRUE.equals(chain.getArg(1));
                 boolean filteredInPlace = false;
                 boolean swapped = false;
+                boolean hadStyle = false;
                 if (thumb != null && config.cameraMode() != Settings.MODE_OFF
                         && config.cameraJavaFilter()) {
                     Bitmap override = lastUiThumb;
@@ -350,9 +351,10 @@ final class CameraFeatures {
                             swapped = true;
                         } catch (Throwable ignored) {
                         }
-                    } else if (transition) {
-                        ParamProbe.CaptureStyle style = probe.latestStyle(5000);
-                        if (style != null && style.candyParam() != null) {
+                    } else {
+                        ParamProbe.CaptureStyle style = probe.consumeThumbStyle(5000);
+                        hadStyle = style != null && style.candyParam() != null;
+                        if (hadStyle) {
                             try {
                                 Object bObj = bmpField.get(thumb);
                                 if (bObj instanceof Bitmap src && !src.isRecycled()) {
@@ -374,6 +376,7 @@ final class CameraFeatures {
                 if (thumbLogs.incrementAndGet() <= 12) {
                     module.log(Log.INFO, TAG, "thumb v0: thumb=" + (thumb != null)
                             + ", transition=" + transition
+                            + ", hadStyle=" + hadStyle
                             + ", filteredInPlace=" + filteredInPlace
                             + ", swapped=" + swapped + ", iv=" + (iv != null));
                 }

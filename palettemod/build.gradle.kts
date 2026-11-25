@@ -11,8 +11,20 @@ android {
         applicationId = "io.martin.hyperpalettemod"
         minSdk = 30
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.3.6-draft"
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionName = "0.3.7-draft"
+    }
+
+    val keystorePath = System.getenv("KEYSTORE_FILE")
+    signingConfigs {
+        if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -20,7 +32,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles("proguard-rules.pro")
-            signingConfig = signingConfigs["debug"]
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs["debug"]
         }
     }
 
