@@ -3,6 +3,7 @@ package io.martin.hyperpalettemod;
 import android.app.Application;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
 import android.util.Log;
 
 import androidx.heifwriter.HeifWriter;
@@ -28,7 +29,7 @@ final class OuterRenderer {
 
     private static final int THUMB_MAX_EDGE = 240;
 
-    record Result(byte[] heic, byte[] thumbJpeg) {
+    record Result(byte[] heic, byte[] thumbJpeg, Bitmap uiThumb) {
     }
 
     private OuterRenderer() {
@@ -53,7 +54,9 @@ final class OuterRenderer {
             }
 
             applyCandy(cameraLoader, bitmap, style.candyParam(), style.lutBitmaps());
-            byte[] thumbJpeg = encodeThumb(bitmap);
+            Bitmap scaled = scaleThumb(bitmap);
+            byte[] thumbJpeg = compressThumb(scaled);
+            Bitmap uiThumb = rotateThumb(scaled, style.jpegRotation());
 
             temp = File.createTempFile("hpm_outer_", ".heic", app.getCacheDir());
             try (HeifWriter writer = new HeifWriter.Builder(
@@ -73,7 +76,7 @@ final class OuterRenderer {
                     + bitmap.getHeight() + " -> " + encoded.length + " bytes (thumb "
                     + (thumbJpeg != null ? thumbJpeg.length : 0) + " B) in "
                     + (System.currentTimeMillis() - t0) + "ms");
-            return new Result(encoded, thumbJpeg);
+            return new Result(encoded, thumbJpeg, uiThumb);
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "OuterRenderer failed, falling back to unfiltered outer: " + t);
             return null;
@@ -88,26 +91,38 @@ final class OuterRenderer {
         }
     }
 
-    private static byte[] encodeThumb(Bitmap full) {
+    private static Bitmap scaleThumb(Bitmap full) {
         int w = full.getWidth();
         int h = full.getHeight();
         int max = Math.max(w, h);
         int tw = max > THUMB_MAX_EDGE ? Math.max(1, (int) Math.round(w * (THUMB_MAX_EDGE / (double) max))) : w;
         int th = max > THUMB_MAX_EDGE ? Math.max(1, (int) Math.round(h * (THUMB_MAX_EDGE / (double) max))) : h;
-        Bitmap scaled = Bitmap.createScaledBitmap(full, tw, th, true);
-        try {
-            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(8192);
-            scaled.compress(Bitmap.CompressFormat.JPEG, 75, out);
-            if (out.size() > 10_000) {
-                out.reset();
-                scaled.compress(Bitmap.CompressFormat.JPEG, 55, out);
-            }
-            return out.toByteArray();
-        } finally {
-            if (scaled != full && !scaled.isRecycled()) {
-                scaled.recycle();
-            }
+        return Bitmap.createScaledBitmap(full, tw, th, true);
+    }
+
+    private static byte[] compressThumb(Bitmap scaled) {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(8192);
+        scaled.compress(Bitmap.CompressFormat.JPEG, 75, out);
+        if (out.size() > 10_000) {
+            out.reset();
+            scaled.compress(Bitmap.CompressFormat.JPEG, 55, out);
         }
+        return out.toByteArray();
+    }
+
+    private static Bitmap rotateThumb(Bitmap scaled, int degrees) {
+        int norm = ((degrees % 360) + 360) % 360;
+        if (norm == 0) {
+            return scaled;
+        }
+        Matrix m = new Matrix();
+        m.postRotate(norm);
+        Bitmap rotated = Bitmap.createBitmap(scaled, 0, 0, scaled.getWidth(), scaled.getHeight(),
+                m, true);
+        if (rotated != scaled && !scaled.isRecycled()) {
+            scaled.recycle();
+        }
+        return rotated;
     }
 
     private static void applyCandy(ClassLoader loader, Bitmap bitmap, String candyParam,

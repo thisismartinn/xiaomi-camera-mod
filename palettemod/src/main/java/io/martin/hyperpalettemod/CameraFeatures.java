@@ -3,12 +3,17 @@ package io.martin.hyperpalettemod;
 import android.app.Application;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.media.Image;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Environment;
 import android.os.FileObserver;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
+import android.view.View;
+import android.widget.ImageView;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -16,6 +21,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.ref.WeakReference;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
@@ -58,14 +65,20 @@ final class CameraFeatures {
             new SaveProfile("6.7", "n7.f", "c", "W8.e", "e"),
     };
 
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+
     private final XposedModule module;
     private final Config config;
     private final ParamProbe probe;
     private volatile boolean hooked;
     private final AtomicInteger seen = new AtomicInteger();
     private final AtomicBoolean logged = new AtomicBoolean();
+    private final AtomicInteger thumbLogs = new AtomicInteger();
     private volatile FileObserver watcher;   // kept: an unreferenced FileObserver is collected
     private volatile ScheduledExecutorService pool;
+    private volatile WeakReference<ImageView> thumbViewRef = new WeakReference<>(null);
+    private volatile Bitmap lastUiThumb;
+    private volatile long lastUiThumbMs;
 
     CameraFeatures(XposedModule module, Config config) {
         this.module = module;
@@ -80,6 +93,7 @@ final class CameraFeatures {
         installWatcher();
         probe.install(loader);
         installWriterHook(loader);
+        installThumbnailHook(loader);
         for (SaveProfile profile : SAVE_PROFILES) {
             int hooks = 0;
             try {
@@ -289,6 +303,77 @@ final class CameraFeatures {
         }
     }
 
+    // Hooks FragmentBottomAction.updateThumbnail (A4.v1.v0 in Camera 6.7.000500.0) so Camera's
+    // round thumbnail circle shows our CandySDK-rendered filtered thumbnail right after shutter.
+    private void installThumbnailHook(ClassLoader loader) {
+        try {
+            Class<?> fragClass = Class.forName("A4.v1", false, loader);
+            Method updateThumb = null;
+            for (Method m : fragClass.getDeclaredMethods()) {
+                Class<?>[] p = m.getParameterTypes();
+                if (m.getName().equals("v0") && p.length == 4
+                        && p[1] == boolean.class && p[2] == int.class && p[3] == boolean.class) {
+                    updateThumb = m;
+                    break;
+                }
+            }
+            if (updateThumb == null) {
+                throw new NoSuchMethodException("A4.v1.v0(F1.i4, boolean, int, boolean)");
+            }
+            Field imageField = fragClass.getDeclaredField("j");
+            imageField.setAccessible(true);
+            Field bmpField = updateThumb.getParameterTypes()[0].getDeclaredField("b");
+            bmpField.setAccessible(true);
+            module.hook(updateThumb).intercept(chain -> {
+                ImageView iv = null;
+                try {
+                    Object self = chain.getThisObject();
+                    if (self != null && imageField.get(self) instanceof ImageView v) {
+                        iv = v;
+                        thumbViewRef = new WeakReference<>(v);
+                    }
+                } catch (Throwable ignored) {
+                }
+                Object thumb = chain.getArg(0);
+                Bitmap override = lastUiThumb;
+                boolean fresh = override != null && !override.isRecycled()
+                        && (System.currentTimeMillis() - lastUiThumbMs) < 4000;
+                boolean swapped = false;
+                if (fresh && thumb != null) {
+                    try {
+                        bmpField.set(thumb, override);
+                        swapped = true;
+                    } catch (Throwable ignored) {
+                    }
+                }
+                if (thumbLogs.incrementAndGet() <= 8) {
+                    module.log(Log.INFO, TAG, "thumb v0: thumb=" + (thumb != null)
+                            + ", swapped=" + swapped + ", fresh=" + fresh + ", iv=" + (iv != null));
+                }
+                return chain.proceed();
+            });
+            module.log(Log.INFO, TAG, "hooked FragmentBottomAction.updateThumbnail (A4.v1.v0)");
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "cannot hook FragmentBottomAction.updateThumbnail (A4.v1.v0): "
+                    + t);
+        }
+    }
+
+    private void pushUiThumb(Bitmap uiThumb) {
+        if (uiThumb == null || uiThumb.isRecycled()) {
+            return;
+        }
+        lastUiThumb = uiThumb;
+        lastUiThumbMs = System.currentTimeMillis();
+        MAIN.post(() -> {
+            ImageView iv = thumbViewRef.get();
+            if (iv != null && !uiThumb.isRecycled()) {
+                iv.setImageBitmap(uiThumb);
+                iv.setVisibility(View.VISIBLE);
+            }
+        });
+    }
+
     private final class BufferedHeicOutputStream extends OutputStream {
         private final OutputStream delegate;
         private final int mode;
@@ -388,6 +473,8 @@ final class CameraFeatures {
         int cameraFilter = ReEditInjector.cameraFilterId(file);
         if (mode == Settings.MODE_FILTERED
                 && (cameraFilter < 0 || cameraFilter == ReEditInjector.FILTER_STANDARD)) {
+            lastUiThumb = null;
+            lastUiThumbMs = 0;
             if (seen.get() <= 8) {
                 module.log(Log.INFO, TAG, "re-edit data skipped on the " + path + ": no filter in "
                         + "this photo (camera filter id " + cameraFilter + ")");
@@ -415,6 +502,7 @@ final class CameraFeatures {
                     outer = rendered.heic();
                     extraExif = ReEditInjector.stripExifThumbnail(
                             ReEditInjector.extractExif(file), rendered.thumbJpeg());
+                    pushUiThumb(rendered.uiThumb());
                     outerRendered = true;
                 }
             }

@@ -26,7 +26,7 @@ final class ParamProbe {
     private static final String CANDY = "com.xiaomi.camera.mivi.filter.MIVIRenderTag$TagForCandy";
     private static final int MAX_LINES = 40;
 
-    record CaptureStyle(int cameraFilterId, int editorFilterId, int degree,
+    record CaptureStyle(int cameraFilterId, int editorFilterId, int degree, int jpegRotation,
                         String candyParam, String styleAdjust, List<Bitmap> lutBitmaps) {
     }
 
@@ -182,6 +182,7 @@ final class ParamProbe {
         int camId = -1;
         int genId = -1;
         int degree = 100;
+        int jpegRotation = 0;
         String candyParam = null;
         String styleAdjust = null;
         List<Bitmap> luts = null;
@@ -201,6 +202,8 @@ final class ParamProbe {
                     genId = i;
                 } else if ("mFilterDegree".equals(f.getName()) && v instanceof Integer i) {
                     degree = i;
+                } else if ("mJpegRotation".equals(f.getName()) && v instanceof Integer i) {
+                    jpegRotation = i;
                 } else if ("mCandyParams".equals(f.getName()) && v instanceof java.util.List<?> list) {
                     for (Object o : list) {
                         if (o instanceof String s && !s.isEmpty()) {
@@ -243,8 +246,8 @@ final class ParamProbe {
             int mappedGenId = remapEditorFilterId(genId);
             CaptureStyle prev = styleMap.get(camId);
             List<Bitmap> keepLuts = luts != null ? luts : (prev != null ? prev.lutBitmaps() : null);
-            styleMap.put(camId, new CaptureStyle(camId, mappedGenId, degree, candyParam,
-                    styleAdjust, keepLuts));
+            styleMap.put(camId, new CaptureStyle(camId, mappedGenId, degree, jpegRotation,
+                    candyParam, styleAdjust, keepLuts));
         }
         if (lines.get() >= MAX_LINES) {
             return;
