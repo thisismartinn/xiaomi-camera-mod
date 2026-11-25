@@ -42,7 +42,7 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.2.6-draft-$(git rev-parse --short HEAD).apk"
+          name="HyperPaletteMod-0.2.7-draft-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -69,9 +69,9 @@ jobs:
           cat > notes.md <<'EOF'
           **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
 
-          **New in 0.2.6:**
-          - Adds an opt-in experimental toggle (**Route filter through Java**) that hooks `MIVISDKConfig.isSupportMIVI3OutputJpeg() -> false` and skips `n9.z0.L1` (`applyMIVIRenderType`) to test whether the 17 Ultra HAL hands an unfiltered YUV `Image` to Java `FilterProcessor` (`di.g.a`). Off by default; force-stop Camera after toggling.
+          **New in 0.2.7:**
+          - When the experimental toggle is on (so the HAL writes an unfiltered HEIC), writes the camera's **real live `@StyleAdjustEffect` Palette values** (`ContrastIntensity`, `SaturationIntensity`, etc.) and `mFilterDegree` from `MIVIRenderTag` into the `edit` record so Media Editor restores your exact camera Palette values non-destructively.
           EOF
-          gh release create "draft-v0.2.6.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v0.2.7.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.2.6 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod 0.2.7 (Media Editor + Camera)" --notes-file notes.md

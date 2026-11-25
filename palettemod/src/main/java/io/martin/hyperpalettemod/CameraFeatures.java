@@ -209,16 +209,22 @@ final class CameraFeatures {
             }
             return null;
         }
-        int learned = probe.editorFilterId(cameraFilter);
+        ParamProbe.CaptureStyle style = probe.styleFor(cameraFilter);
+        int learned = style != null ? style.editorFilterId() : -1;
         int filter = learned > 0 ? learned
                 : (cameraFilter == ReEditInjector.CAMERA_CHROME ? ReEditInjector.EDITOR_CHROME
                 : config.cameraFilter());
         boolean nativeStyle = learned > 0 || cameraFilter == ReEditInjector.CAMERA_CHROME;
+        boolean useLive = config.cameraJavaFilter() && style != null && style.styleAdjust() != null;
+        int progress = useLive ? style.degree() : 0;
+        String styleAdjust = useLive ? style.styleAdjust() : null;
         try {
-            byte[] injected = ReEditInjector.inject(file, filter, 0, nativeStyle);
+            byte[] injected = ReEditInjector.inject(file, filter, progress, nativeStyle,
+                    styleAdjust);
             if (injected != null && logged.compareAndSet(false, true)) {
                 module.log(Log.INFO, TAG, "added re-edit data on the " + path + " (camera filter "
                         + cameraFilter + ", editor filter " + filter + ", native=" + nativeStyle
+                        + ", liveStyle=" + (styleAdjust != null ? styleAdjust : "neutral")
                         + ", +" + (injected.length - file.length)
                         + " bytes); logging the first photo only");
             }

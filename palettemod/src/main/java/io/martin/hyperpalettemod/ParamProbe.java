@@ -23,13 +23,15 @@ final class ParamProbe {
     private static final String CANDY = "com.xiaomi.camera.mivi.filter.MIVIRenderTag$TagForCandy";
     private static final int MAX_LINES = 40;
 
+    record CaptureStyle(int cameraFilterId, int editorFilterId, int degree, String styleAdjust) {
+    }
+
     private final XposedModule module;
     private final Config config;
     private final AtomicInteger lines = new AtomicInteger();
     private final AtomicInteger filterProcLines = new AtomicInteger();
-    private final AtomicBoolean jpegBypassLogged = new AtomicBoolean();
     private final AtomicBoolean halTagBypassLogged = new AtomicBoolean();
-    private final ConcurrentHashMap<Integer, Integer> filterMap = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, CaptureStyle> styleMap = new ConcurrentHashMap<>();
     private volatile String last;
 
     ParamProbe(XposedModule module, Config config) {
@@ -37,11 +39,15 @@ final class ParamProbe {
         this.config = config;
     }
 
-    // Returns the editor's mGeneralFilterId learned from MIVIRenderTag for a given camera filterId,
-    // or -1 if not seen yet.
+    // Returns the latest CaptureStyle learned from MIVIRenderTag for a given camera filterId,
+    // or null if not seen yet.
+    CaptureStyle styleFor(int cameraFilterId) {
+        return styleMap.get(cameraFilterId);
+    }
+
     int editorFilterId(int cameraFilterId) {
-        Integer id = filterMap.get(cameraFilterId);
-        return id != null ? id : -1;
+        CaptureStyle s = styleMap.get(cameraFilterId);
+        return s != null ? s.editorFilterId() : -1;
     }
 
     void install(ClassLoader loader) {
@@ -138,28 +144,11 @@ final class ParamProbe {
         }
     }
 
-    // Experimental opt-in routing: forces MIVI3 to hand YUV to Java ImageProcessor -> di.g.a
-    // instead of encoding a HAL-filtered HEIC directly, and skips sending applyMIVIRenderType
-    // to the HAL so the YUV frame arrives unfiltered.
+    // Experimental opt-in: skips sending applyMIVIRenderType (n9.z0.L1) to the HAL so the saved
+    // HEIC is unfiltered, allowing ReEditInjector to embed the real unfiltered image + live Palette.
     private void installJavaFilterRouting(ClassLoader loader) {
         if (!config.cameraJavaFilter()) {
             return;
-        }
-        try {
-            Class<?> sdkCfg = Class.forName("com.xiaomi.camera.mivi.MIVISDKConfig", false, loader);
-            Method m = sdkCfg.getDeclaredMethod("isSupportMIVI3OutputJpeg");
-            module.hook(m).intercept(chain -> {
-                if (config.cameraJavaFilter()) {
-                    if (jpegBypassLogged.compareAndSet(false, true)) {
-                        module.log(Log.INFO, TAG, "isSupportMIVI3OutputJpeg() -> false (experimental)");
-                    }
-                    return Boolean.FALSE;
-                }
-                return chain.proceed();
-            });
-            module.log(Log.INFO, TAG, "hooked MIVISDKConfig.isSupportMIVI3OutputJpeg (experimental)");
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG, "cannot hook isSupportMIVI3OutputJpeg: " + t);
         }
         try {
             Class<?> z0 = Class.forName("n9.z0", false, loader);
@@ -167,13 +156,13 @@ final class ParamProbe {
             module.hook(l1).intercept(chain -> {
                 if (config.cameraJavaFilter()) {
                     if (halTagBypassLogged.compareAndSet(false, true)) {
-                        module.log(Log.INFO, TAG, "n9.z0.L1 skipped (applyMIVIRenderType off)");
+                        module.log(Log.INFO, TAG, "n9.z0.L1 skipped (unfiltered HAL HEIC mode)");
                     }
                     return null;
                 }
                 return chain.proceed();
             });
-            module.log(Log.INFO, TAG, "hooked n9.z0.L1 (skip HAL filter tag, experimental)");
+            module.log(Log.INFO, TAG, "hooked n9.z0.L1 (unfiltered HAL HEIC mode, experimental)");
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "cannot hook n9.z0.L1: " + t);
         }
@@ -182,6 +171,8 @@ final class ParamProbe {
     private void dumpTag(Object tag) throws Exception {
         int camId = -1;
         int genId = -1;
+        int degree = 100;
+        String styleAdjust = null;
         StringBuilder sb = new StringBuilder();
         for (Field f : tag.getClass().getDeclaredFields()) {
             if (Modifier.isStatic(f.getModifiers())) {
@@ -196,6 +187,18 @@ final class ParamProbe {
                     camId = i;
                 } else if ("mGeneralFilterId".equals(f.getName()) && v instanceof Integer i) {
                     genId = i;
+                } else if ("mFilterDegree".equals(f.getName()) && v instanceof Integer i) {
+                    degree = i;
+                } else if ("mCandyParams".equals(f.getName()) && v instanceof java.util.List<?> list) {
+                    for (Object o : list) {
+                        if (o instanceof String s) {
+                            String extracted = extractStyleAdjust(s);
+                            if (extracted != null) {
+                                styleAdjust = extracted;
+                                break;
+                            }
+                        }
+                    }
                 }
                 if (v instanceof java.util.List<?> list) {
                     sb.append(f.getName()).append("=[");
@@ -209,7 +212,7 @@ final class ParamProbe {
             }
         }
         if (camId > 0 && genId > 0) {
-            filterMap.put(camId, genId);
+            styleMap.put(camId, new CaptureStyle(camId, genId, degree, styleAdjust));
         }
         if (lines.get() >= MAX_LINES) {
             return;
@@ -221,6 +224,15 @@ final class ParamProbe {
         last = text;
         lines.incrementAndGet();
         module.log(Log.INFO, TAG, "initParams tag: " + text);
+    }
+
+    private static String extractStyleAdjust(String candy) {
+        int start = candy.indexOf("@StyleAdjustEffect;");
+        if (start < 0) {
+            return null;
+        }
+        int next = candy.indexOf('@', start + 1);
+        return next > start ? candy.substring(start, next) : candy.substring(start);
     }
 
     private void report(Object self, Field outer, Object arg, Object result) throws Exception {
