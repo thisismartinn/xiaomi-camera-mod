@@ -1,6 +1,7 @@
 package io.martin.hyperpalettemod;
 
 import android.content.res.Resources;
+import android.graphics.Bitmap;
 import android.os.Build;
 import android.util.Log;
 import android.view.LayoutInflater;
@@ -13,6 +14,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
 import java.util.Locale;
+import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.libxposed.api.XposedModule;
@@ -32,8 +34,13 @@ import io.github.libxposed.api.XposedModule;
 //     wide (sized for the 18 series' font); with another font a two digit value wraps onto two lines.
 //     When the panel is inflated, both views are made as wide as "100" needs in their own font.
 //
+//  3. Optional Compare-against-saved-look. On non-destructive re-edit photos, Media Editor's Compare
+//     button toggles h50.q.setShowOrigin(true), which draws a50.a.a (the embedded unfiltered origin).
+//     When enabled, we snapshot the first non-origin rendered bitmap and temporarily swap a50.a.a
+//     while setShowOrigin(true) is active, restoring the real unfiltered origin on release.
+//
 // Each is a setting of this module (see Settings). The pad is decided when the editor starts; the
-// numbers are decided every time the panel is inflated.
+// numbers and compare mode are read dynamically.
 final class EditorFeatures {
     private static final String TAG = "HyperPaletteMod";
     private static final String GATE_CLASS = "gt.a";
@@ -45,12 +52,23 @@ final class EditorFeatures {
             "filter_param_panel_saturation_value", "filter_param_panel_tone_value"};
     private static final String WIDEST_VALUE = "100";   // the largest magnitude the pad shows
 
+    private static final class CompareState {
+        Object originState;
+        Bitmap realOrigin;
+        Bitmap savedSnapshot;
+        Bitmap pendingBeforeOrigin;
+        boolean swapped;
+    }
+
     private final XposedModule module;
     private final Config config;
     private volatile boolean padDone;
     private volatile boolean widthHooked;
+    private volatile boolean compareHooked;
     private volatile int[] valueIds;
     private final AtomicBoolean widthFailureLogged = new AtomicBoolean();
+    private final AtomicBoolean compareSnapshotLogged = new AtomicBoolean();
+    private final WeakHashMap<Object, CompareState> compareStates = new WeakHashMap<>();
 
     EditorFeatures(XposedModule module, Config config) {
         this.module = module;
@@ -66,6 +84,7 @@ final class EditorFeatures {
             }
         }
         installWidthFix();
+        installCompareHook(loader);
     }
 
     // ---- 1. the pad ----------------------------------------------------------------------------
@@ -184,5 +203,129 @@ final class EditorFeatures {
         params.width = need;
         value.setLayoutParams(params);
         value.setSingleLine(true);
+    }
+
+    // ---- 3. compare against saved look ---------------------------------------------------------
+
+    private void installCompareHook(ClassLoader loader) {
+        if (compareHooked) {
+            return;
+        }
+        try {
+            Class<?> canvasView = Class.forName("h50.q", false, loader);
+            Class<?> originStateClass = Class.forName("a50.a", false, loader);
+            Field origBitmapField = originStateClass.getDeclaredField("a");
+            origBitmapField.setAccessible(true);
+
+            Method setOriginState = canvasView.getDeclaredMethod("setOriginalImageState",
+                    originStateClass);
+            Method setImageBitmap = canvasView.getDeclaredMethod(
+                    "setImageBitmap$photoeditor_base_release", Bitmap.class);
+            Method setShowOrigin = canvasView.getDeclaredMethod("setShowOrigin", boolean.class);
+
+            module.hook(setOriginState).intercept(chain -> {
+                Object res = chain.proceed();
+                try {
+                    Object self = chain.getThisObject();
+                    Object origState = chain.getArg(0);
+                    if (self != null) {
+                        Bitmap originBmp = origState != null
+                                && origBitmapField.get(origState) instanceof Bitmap b ? b : null;
+                        synchronized (compareStates) {
+                            CompareState cs = compareStates.computeIfAbsent(self,
+                                    k -> new CompareState());
+                            if (cs.originState != origState) {
+                                if (cs.savedSnapshot != null && !cs.savedSnapshot.isRecycled()) {
+                                    cs.savedSnapshot.recycle();
+                                }
+                                cs.originState = origState;
+                                cs.realOrigin = originBmp;
+                                cs.swapped = false;
+                                cs.savedSnapshot = null;
+                                if (cs.pendingBeforeOrigin != null
+                                        && !cs.pendingBeforeOrigin.isRecycled()
+                                        && cs.pendingBeforeOrigin != originBmp) {
+                                    cs.savedSnapshot = copyBitmap(cs.pendingBeforeOrigin);
+                                }
+                                cs.pendingBeforeOrigin = null;
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+                return res;
+            });
+
+            module.hook(setImageBitmap).intercept(chain -> {
+                Object res = chain.proceed();
+                if (!config.editorCompareSaved()) {
+                    return res;
+                }
+                try {
+                    Object self = chain.getThisObject();
+                    Object arg0 = chain.getArg(0);
+                    if (self != null && arg0 instanceof Bitmap bmp && !bmp.isRecycled()) {
+                        synchronized (compareStates) {
+                            CompareState cs = compareStates.computeIfAbsent(self,
+                                    k -> new CompareState());
+                            if (cs.originState == null) {
+                                cs.pendingBeforeOrigin = bmp;
+                            } else if (cs.savedSnapshot == null && bmp != cs.realOrigin) {
+                                Bitmap snap = copyBitmap(bmp);
+                                if (snap != null) {
+                                    cs.savedSnapshot = snap;
+                                    if (compareSnapshotLogged.compareAndSet(false, true)) {
+                                        module.log(Log.INFO, TAG, "editor compare: captured saved "
+                                                + "snapshot " + snap.getWidth() + "x"
+                                                + snap.getHeight());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+                return res;
+            });
+
+            module.hook(setShowOrigin).intercept(chain -> {
+                try {
+                    Object self = chain.getThisObject();
+                    boolean show = Boolean.TRUE.equals(chain.getArg(0));
+                    if (self != null) {
+                        synchronized (compareStates) {
+                            CompareState cs = compareStates.get(self);
+                            if (cs != null && cs.originState != null) {
+                                if (show && config.editorCompareSaved()
+                                        && cs.savedSnapshot != null
+                                        && !cs.savedSnapshot.isRecycled()) {
+                                    origBitmapField.set(cs.originState, cs.savedSnapshot);
+                                    cs.swapped = true;
+                                } else if (!show && cs.swapped && cs.realOrigin != null) {
+                                    origBitmapField.set(cs.originState, cs.realOrigin);
+                                    cs.swapped = false;
+                                }
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+                return chain.proceed();
+            });
+
+            compareHooked = true;
+            module.log(Log.INFO, TAG, "hooked Media Editor compare view (h50.q)");
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "cannot hook Media Editor compare view (h50.q): " + t);
+        }
+    }
+
+    private static Bitmap copyBitmap(Bitmap src) {
+        try {
+            Bitmap.Config cfg = src.getConfig();
+            return src.copy(cfg != null ? cfg : Bitmap.Config.ARGB_8888, false);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 }

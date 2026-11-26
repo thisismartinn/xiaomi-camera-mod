@@ -14,6 +14,7 @@ Enable it for **Camera** (`com.android.camera`) and **Media Editor** (`com.miui.
 | ------- | ------- | ------------ |
 | Enable Palette pad | on | The Media Editor opens its Saturation / Tone pad only when `Build.DEVICE` is in a built-in list (`madrid`, `venice`, `hongkong`, the 18 series). The module adds this phone to that list. Read when the editor starts. |
 | Single-line pad values | on | The pad's number fields are a fixed 16 dp wide, which wraps two-digit values in this phone's font. They are widened to fit `100` on one line. |
+| Compare against saved look | off | Makes the Media Editor's Compare (before/after) button show the photo's initial saved Palette look instead of the unfiltered original. |
 | Non-destructive Palette re-edit | on | Routes the camera's filter through the Java pipeline so the module receives the unfiltered source frame and the live filter + Palette values. Force-stop Camera after changing. |
 | Photo re-edit data | Filtered photos | Controls which saved HEIC and JPEG photos get re-edit metadata (`edit` item / trailing protobuf + `micamedit` XMP): **Off**, **Filtered photos**, or **Every photo**. Read on every save. |
 | Fallback filter ID | `58` | Editor filter ID used only if the camera's filter ID cannot be mapped automatically. |

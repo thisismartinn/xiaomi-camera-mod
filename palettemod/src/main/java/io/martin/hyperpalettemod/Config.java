@@ -27,6 +27,10 @@ final class Config {
         return bool(Settings.EDITOR_WIDTH, Settings.EDITOR_WIDTH_DEFAULT);
     }
 
+    boolean editorCompareSaved() {
+        return bool(Settings.EDITOR_COMPARE_SAVED, Settings.EDITOR_COMPARE_SAVED_DEFAULT);
+    }
+
     int cameraMode() {
         int mode = integer(Settings.CAMERA_MODE, Settings.CAMERA_MODE_DEFAULT);
         return mode < Settings.MODE_OFF || mode > Settings.MODE_ALL ? Settings.MODE_OFF : mode;

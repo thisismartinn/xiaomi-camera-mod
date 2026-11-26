@@ -36,6 +36,7 @@ public class SettingsActivity extends Activity {
     private Button scopeButton;
     private Switch padSwitch;
     private Switch widthSwitch;
+    private Switch compareSavedSwitch;
     private Switch javaFilterSwitch;
     private RadioGroup modeGroup;
     private final int[] modeIds = new int[3];
@@ -82,6 +83,9 @@ public class SettingsActivity extends Activity {
         widthSwitch = switchRow(root, "Single-line pad values",
                 "Prevents two-digit numbers from wrapping.",
                 Settings.EDITOR_WIDTH);
+        compareSavedSwitch = switchRow(root, "Compare against saved look",
+                "Compare button shows the saved Palette look instead of the unfiltered original.",
+                Settings.EDITOR_COMPARE_SAVED);
 
         // ---- Camera ----
         root.addView(section("Camera"));
@@ -208,6 +212,8 @@ public class SettingsActivity extends Activity {
         loading = true;
         padSwitch.setChecked(prefs.getBoolean(Settings.EDITOR_PAD, Settings.EDITOR_PAD_DEFAULT));
         widthSwitch.setChecked(prefs.getBoolean(Settings.EDITOR_WIDTH, Settings.EDITOR_WIDTH_DEFAULT));
+        compareSavedSwitch.setChecked(prefs.getBoolean(Settings.EDITOR_COMPARE_SAVED,
+                Settings.EDITOR_COMPARE_SAVED_DEFAULT));
         javaFilterSwitch.setChecked(prefs.getBoolean(Settings.CAMERA_JAVA_FILTER,
                 Settings.CAMERA_JAVA_FILTER_DEFAULT));
         int mode = prefs.getInt(Settings.CAMERA_MODE, Settings.CAMERA_MODE_DEFAULT);

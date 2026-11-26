@@ -55,9 +55,11 @@ jobs:
       - name: Name the APK
         id: apk
         run: |
-          name="HyperPaletteMod-0.3.9-draft-$(git rev-parse --short HEAD).apk"
+          ver=$(grep -oP 'versionName\s*=\s*"\K[^"]+' palettemod/build.gradle.kts)
+          name="HyperPaletteMod-${ver}-$(git rev-parse --short HEAD).apk"
           cp palettemod/build/outputs/apk/release/palettemod-release.apk "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -82,9 +84,9 @@ jobs:
           cat > notes.md <<'EOF'
           **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
 
-          **New in 0.3.9:**
-          - Fixes rapid back-to-back shooting in `A4.v1.v0`: checks `consumeThumbStyle` before `lastUiThumb` so each new shot always filters its own shutter thumbnail in-place instead of reusing the previous shot's cached thumbnail.
+          **New in 0.4.2-draft:**
+          - Adds a **"Compare against saved look"** toggle under Media Editor settings: when enabled, holding the Compare (before/after) button in Media Editor shows the photo's initial saved Palette look instead of reverting to the unfiltered original.
           EOF
-          gh release create "draft-v0.3.9.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
+          gh release create "draft-v${{ steps.apk.outputs.ver }}.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
             --draft --prerelease --target "$GITHUB_SHA" \
-            --title "Draft: HyperPaletteMod 0.3.9 (Media Editor + Camera)" --notes-file notes.md
+            --title "Draft: HyperPaletteMod ${{ steps.apk.outputs.ver }} (Media Editor + Camera)" --notes-file notes.md

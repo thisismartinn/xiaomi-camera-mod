@@ -13,6 +13,8 @@ final class Settings {
     static final boolean EDITOR_PAD_DEFAULT = true;
     static final String EDITOR_WIDTH = "editor_width";           // keep the pad's numbers on one line
     static final boolean EDITOR_WIDTH_DEFAULT = true;
+    static final String EDITOR_COMPARE_SAVED = "editor_compare_saved"; // Compare button shows saved look
+    static final boolean EDITOR_COMPARE_SAVED_DEFAULT = false;
 
     // Camera
     static final String CAMERA_MODE = "camera_mode";             // re-edit data in saved HEIC photos
