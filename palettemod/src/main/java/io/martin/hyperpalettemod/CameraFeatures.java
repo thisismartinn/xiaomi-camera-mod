@@ -222,7 +222,8 @@ final class CameraFeatures {
                 Object pathObj = chain.getArg(0);
                 if (mode != Settings.MODE_OFF && result instanceof OutputStream realOut
                         && pathObj instanceof String path
-                        && isSupportedPhotoName(path)) {
+                        && path.toLowerCase(Locale.ROOT).endsWith(".heic")
+                        && !path.toLowerCase(Locale.ROOT).contains("/thumbnails/")) {
                     return new BufferedHeicOutputStream(realOut, mode, path);
                 }
                 return result;
