@@ -82,9 +82,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          **Draft, testing on device.** One module for the Palette in the **Media Editor** and the **Camera**, with its own settings screen.
+          **HyperPaletteMod 0.4.2** — Palette for the **Media Editor** and **Camera**, with its own settings screen.
 
-          **New in 0.4.2-draft:**
+          **New in 0.4.2:**
           - Adds a **"Compare against saved look"** toggle under Media Editor settings: when enabled, holding the Compare (before/after) button in Media Editor shows the photo's initial saved Palette look instead of reverting to the unfiltered original.
           EOF
           gh release create "draft-v${{ steps.apk.outputs.ver }}.${GITHUB_RUN_NUMBER}" "${{ steps.apk.outputs.name }}" \
