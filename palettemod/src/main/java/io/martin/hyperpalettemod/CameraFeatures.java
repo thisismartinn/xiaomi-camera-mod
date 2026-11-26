@@ -222,7 +222,7 @@ final class CameraFeatures {
                 Object pathObj = chain.getArg(0);
                 if (mode != Settings.MODE_OFF && result instanceof OutputStream realOut
                         && pathObj instanceof String path
-                        && path.toLowerCase(Locale.ROOT).endsWith(".heic")) {
+                        && isSupportedPhotoName(path)) {
                     return new BufferedHeicOutputStream(realOut, mode, path);
                 }
                 return result;
@@ -239,7 +239,7 @@ final class CameraFeatures {
                 Object pathObj = chain.getArg(0);
                 Object bufObj = chain.getArg(1);
                 if (mode != Settings.MODE_OFF && pathObj instanceof String path
-                        && path.toLowerCase(Locale.ROOT).endsWith(".heic")
+                        && isSupportedPhotoName(path)
                         && bufObj instanceof ByteBuffer bb) {
                     ByteBuffer dup = bb.duplicate();
                     byte[] orig = new byte[dup.remaining()];
@@ -279,7 +279,7 @@ final class CameraFeatures {
                     ByteBuffer dup = bb.duplicate();
                     byte[] orig = new byte[dup.remaining()];
                     dup.get(orig);
-                    if (ReEditInjector.isHeic(orig)) {
+                    if (ReEditInjector.isSupportedImage(orig)) {
                         try {
                             byte[] injected = addToBytes(orig, mode, "Storage.J");
                             if (injected != null) {
@@ -493,9 +493,18 @@ final class CameraFeatures {
         }
     }
 
+    private static boolean isSupportedPhotoName(String name) {
+        if (name == null) {
+            return false;
+        }
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".heic") || lower.endsWith(".jpg") || lower.endsWith(".jpeg");
+    }
+
     // The photo with the data added, or null when it is not to be changed.
     private byte[] addToBytes(byte[] file, int mode, String path) {
-        if (!ReEditInjector.isHeic(file)) {
+        boolean jpeg = ReEditInjector.isJpeg(file);
+        if (!jpeg && !ReEditInjector.isHeic(file)) {
             return null;
         }
         if (ReEditInjector.hasEdit(file)) {
@@ -528,22 +537,32 @@ final class CameraFeatures {
         try {
             byte[] outer = file;
             byte[] extraExif = null;
+            byte[] thumbJpeg = null;
             boolean outerRendered = false;
             if (useLive && style.candyParam() != null) {
-                OuterRenderer.Result rendered = OuterRenderer.render(module, currentApplication(),
+                OuterRenderer.Result rendered = jpeg
+                        ? OuterRenderer.renderJpeg(module, probe.cameraLoader(), file, style, path)
+                        : OuterRenderer.render(module, currentApplication(),
                         probe.cameraLoader(), file, style, path);
                 if (rendered != null) {
                     outer = rendered.heic();
-                    extraExif = ReEditInjector.stripExifThumbnail(
-                            ReEditInjector.extractExif(file), rendered.thumbJpeg());
+                    thumbJpeg = rendered.thumbJpeg();
+                    if (!jpeg) {
+                        extraExif = ReEditInjector.stripExifThumbnail(
+                                ReEditInjector.extractExif(file), thumbJpeg);
+                    }
                     pushUiThumb(rendered.uiThumb());
                     outerRendered = true;
                 }
             }
-            byte[] injected = ReEditInjector.inject(outer, file, extraExif, filter, progress,
+            byte[] injected = jpeg
+                    ? ReEditInjector.injectJpeg(outer, file, thumbJpeg, filter, progress,
+                    nativeStyle, styleAdjust)
+                    : ReEditInjector.inject(outer, file, extraExif, filter, progress,
                     nativeStyle, styleAdjust);
             if (injected != null && logged.compareAndSet(false, true)) {
-                module.log(Log.INFO, TAG, "added re-edit data on the " + path + " (camera filter "
+                module.log(Log.INFO, TAG, "added re-edit data on the " + path + " (fmt="
+                        + (jpeg ? "jpeg" : "heic") + ", camera filter "
                         + cameraFilter + ", editor filter " + filter + ", native=" + nativeStyle
                         + ", outerRendered=" + outerRendered
                         + ", liveStyle=" + (styleAdjust != null ? styleAdjust : "neutral")
@@ -560,7 +579,7 @@ final class CameraFeatures {
         }
     }
 
-    // ---- the watcher: any finished HEIC in DCIM/Camera ------------------------------------------
+    // ---- the watcher: any finished HEIC/JPEG in DCIM/Camera ------------------------------------
 
     private synchronized void installWatcher() {
         if (watcher != null) {
@@ -582,7 +601,7 @@ final class CameraFeatures {
                     FileObserver.MOVED_TO | FileObserver.CLOSE_WRITE) {
                 @Override
                 public void onEvent(int event, String name) {
-                    if (name != null && name.toLowerCase(Locale.ROOT).endsWith(".heic")) {
+                    if (isSupportedPhotoName(name)) {
                         File file = new File(dir, name);
                         executor.schedule(() -> addToFile(file), 2500, TimeUnit.MILLISECONDS);
                     }
@@ -591,7 +610,7 @@ final class CameraFeatures {
             observer.startWatching();
             pool = executor;
             watcher = observer;
-            module.log(Log.INFO, TAG, "watching " + dir + " for finished HEIC photos");
+            module.log(Log.INFO, TAG, "watching " + dir + " for finished HEIC/JPEG photos");
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "cannot watch DCIM/Camera: " + t);
         }

@@ -249,8 +249,12 @@ final class ReEditInjector {
         }
     }
 
-    // Returns true if the HEIC already contains an "edit" item in iinf.
+    // Returns true if the HEIC contains an "edit" item in iinf, or if the JPEG's XMP already
+    // contains a micamedit marker.
     static boolean hasEdit(byte[] file) {
+        if (isJpeg(file)) {
+            return hasJpegEdit(file);
+        }
         try {
             List<Box> top = boxes(file, 0, file.length);
             Box meta = null;
@@ -325,6 +329,15 @@ final class ReEditInjector {
             }
         }
         return false;
+    }
+
+    static boolean isJpeg(byte[] file) {
+        return file != null && file.length >= 4
+                && (file[0] & 0xFF) == 0xFF && (file[1] & 0xFF) == 0xD8;
+    }
+
+    static boolean isSupportedImage(byte[] file) {
+        return isHeic(file) || isJpeg(file);
     }
 
     // Returns the photo with the re-edit data added, or null when it already has an "edit" item.
@@ -642,26 +655,34 @@ final class ReEditInjector {
     }
 
     private static byte[] newXmp(int editLength) {
+        return newXmp(-1, editLength);
+    }
+
+    private static byte[] newXmp(int offset, int editLength) {
         return ("<x:xmpmeta\n"
                 + "  xmlns:x=\"adobe:ns:meta/\"\n"
                 + "  x:xmptk=\"Adobe XMP Core 5.1.2\">\n"
                 + "  <rdf:RDF\n"
                 + "    xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n"
-                + descriptionFor(editLength)
+                + descriptionFor(offset, editLength)
                 + "  </rdf:RDF>\n"
                 + "</x:xmpmeta>\n").getBytes(StandardCharsets.UTF_8);
     }
 
-    private static String descriptionFor(int editLength) {
+    private static String descriptionFor(int offset, int editLength) {
         return "    <rdf:Description\n"
                 + "      rdf:about=\"\"\n"
                 + "      xmlns:micamedit=\"" + NAMESPACE + "\"\n"
                 + "      micamedit:version=\"1\"\n"
-                + "      micamedit:offset=\"-1\"\n"
+                + "      micamedit:offset=\"" + offset + "\"\n"
                 + "      micamedit:len=\"" + editLength + "\"/>\n";
     }
 
     private static byte[] mergeXmp(byte[] old, int editLength) throws IOException {
+        return mergeXmp(old, -1, editLength);
+    }
+
+    private static byte[] mergeXmp(byte[] old, int offset, int editLength) throws IOException {
         String text = new String(old, StandardCharsets.UTF_8);
         if (text.contains("micamedit")) {
             throw new IOException("XMP already mentions micamedit");
@@ -670,8 +691,220 @@ final class ReEditInjector {
         if (close < 0) {
             throw new IOException("XMP has no rdf:RDF element");
         }
-        return (text.substring(0, close) + descriptionFor(editLength) + text.substring(close))
-                .getBytes(StandardCharsets.UTF_8);
+        return (text.substring(0, close) + descriptionFor(offset, editLength)
+                + text.substring(close)).getBytes(StandardCharsets.UTF_8);
+    }
+
+    // ---- JPEG re-edit injection --------------------------------------------------------------
+    // Xiaomi's JPEG re-edit format (from MiPropXmp Wa.a + Za.d + Za.h):
+    //  - APP1 XMP carries micamedit:version="1" micamedit:offset="<from EOF>" micamedit:len="<len>"
+    //  - Raw ReEditDataBeanMsg protobuf is appended right after JPEG EOI (FF D9), so offset == len.
+
+    private static final byte[] JPEG_EXIF_HDR = "Exif\0\0".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] JPEG_XMP_HDR =
+            "http://ns.adobe.com/xap/1.0/\0".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] JPEG_XMTH_HDR = "XMTH".getBytes(StandardCharsets.US_ASCII);
+
+    private static boolean hasJpegEdit(byte[] file) {
+        int pos = 2;
+        while (pos + 4 <= file.length) {
+            while (pos < file.length && (file[pos] & 0xFF) != 0xFF) {
+                pos++;
+            }
+            while (pos < file.length && (file[pos] & 0xFF) == 0xFF) {
+                pos++;
+            }
+            if (pos >= file.length) {
+                break;
+            }
+            int marker = file[pos++] & 0xFF;
+            if (marker == 0xDA || marker == 0xD9) {
+                break;
+            }
+            if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8)) {
+                continue;
+            }
+            if (pos + 2 > file.length) {
+                break;
+            }
+            int segLen = ((file[pos] & 0xFF) << 8) | (file[pos + 1] & 0xFF);
+            if (segLen < 2 || pos + segLen > file.length) {
+                break;
+            }
+            int payloadStart = pos + 2;
+            int payloadLen = segLen - 2;
+            if (marker == 0xE1 && startsWith(file, payloadStart, payloadLen, JPEG_XMP_HDR)) {
+                String xmp = new String(file, payloadStart + JPEG_XMP_HDR.length,
+                        payloadLen - JPEG_XMP_HDR.length, StandardCharsets.UTF_8);
+                if (xmp.contains("micamedit") || xmp.contains(NAMESPACE)) {
+                    return true;
+                }
+            }
+            pos += segLen;
+        }
+        return false;
+    }
+
+    static byte[] injectJpeg(byte[] outerJpeg, byte[] sourceJpeg, byte[] filteredThumbJpeg,
+                             int editorFilterId, int progress, boolean nativeStyle,
+                             String styleAdjust) throws IOException {
+        if (!isJpeg(outerJpeg) || !isJpeg(sourceJpeg)) {
+            throw new IOException("not a JPEG");
+        }
+        if (hasJpegEdit(sourceJpeg)) {
+            return null;
+        }
+
+        // Extract Exif, existing XMP, and non-XMTH APP2 segments (e.g. ICC_PROFILE) from sourceJpeg.
+        byte[] srcExif = null;
+        byte[] srcXmp = null;
+        List<byte[]> srcApp2 = new ArrayList<>();
+        int pos = 2;
+        while (pos + 4 <= sourceJpeg.length) {
+            while (pos < sourceJpeg.length && (sourceJpeg[pos] & 0xFF) != 0xFF) {
+                pos++;
+            }
+            while (pos < sourceJpeg.length && (sourceJpeg[pos] & 0xFF) == 0xFF) {
+                pos++;
+            }
+            if (pos >= sourceJpeg.length) {
+                break;
+            }
+            int marker = sourceJpeg[pos++] & 0xFF;
+            if (marker == 0xDA || marker == 0xD9) {
+                break;
+            }
+            if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8)) {
+                continue;
+            }
+            if (pos + 2 > sourceJpeg.length) {
+                break;
+            }
+            int segLen = ((sourceJpeg[pos] & 0xFF) << 8) | (sourceJpeg[pos + 1] & 0xFF);
+            if (segLen < 2 || pos + segLen > sourceJpeg.length) {
+                break;
+            }
+            int payloadStart = pos + 2;
+            int payloadLen = segLen - 2;
+            if (marker == 0xE1) {
+                if (srcExif == null && startsWith(sourceJpeg, payloadStart, payloadLen, JPEG_EXIF_HDR)) {
+                    srcExif = Arrays.copyOfRange(sourceJpeg, payloadStart, payloadStart + payloadLen);
+                } else if (srcXmp == null && startsWith(sourceJpeg, payloadStart, payloadLen, JPEG_XMP_HDR)) {
+                    srcXmp = Arrays.copyOfRange(sourceJpeg, payloadStart + JPEG_XMP_HDR.length,
+                            payloadStart + payloadLen);
+                }
+            } else if (marker == 0xE2) {
+                if (!startsWith(sourceJpeg, payloadStart, payloadLen, JPEG_XMTH_HDR)) {
+                    srcApp2.add(Arrays.copyOfRange(sourceJpeg, payloadStart, payloadStart + payloadLen));
+                }
+            }
+            pos += segLen;
+        }
+
+        if (srcExif != null && filteredThumbJpeg != null) {
+            // Reuse stripExifThumbnail (expects 4-byte BE offset to TIFF header: 6 for "Exif\0\0").
+            byte[] wrapped = new byte[4 + srcExif.length];
+            wrapped[3] = (byte) JPEG_EXIF_HDR.length;
+            System.arraycopy(srcExif, 0, wrapped, 4, srcExif.length);
+            byte[] patched = stripExifThumbnail(wrapped, filteredThumbJpeg);
+            if (patched != null && patched.length > 4) {
+                srcExif = Arrays.copyOfRange(patched, 4, patched.length);
+            }
+        }
+
+        byte[] edit = buildEdit(sourceJpeg, editorFilterId, progress, nativeStyle, styleAdjust);
+        byte[] xmpBody = srcXmp != null ? mergeXmp(srcXmp, edit.length, edit.length)
+                : newXmp(edit.length, edit.length);
+        if (JPEG_XMP_HDR.length + xmpBody.length + 2 > 0xFFFF) {
+            throw new IOException("XMP APP1 exceeds 64 KB JPEG segment limit");
+        }
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream(
+                outerJpeg.length + edit.length + (srcExif != null ? srcExif.length : 0) + 4096);
+        out.write(0xFF);
+        out.write(0xD8);
+
+        if (srcExif != null && srcExif.length + 2 <= 0xFFFF) {
+            writeJpegSegment(out, 0xE1, srcExif);
+        }
+        byte[] xmpPayload = new byte[JPEG_XMP_HDR.length + xmpBody.length];
+        System.arraycopy(JPEG_XMP_HDR, 0, xmpPayload, 0, JPEG_XMP_HDR.length);
+        System.arraycopy(xmpBody, 0, xmpPayload, JPEG_XMP_HDR.length, xmpBody.length);
+        writeJpegSegment(out, 0xE1, xmpPayload);
+        for (byte[] app2 : srcApp2) {
+            if (app2.length + 2 <= 0xFFFF) {
+                writeJpegSegment(out, 0xE2, app2);
+            }
+        }
+
+        // Copy image body from outerJpeg, skipping its APP0/APP1/APP2 segments so we don't
+        // duplicate Exif/XMP/XMTH.
+        int opos = 2;
+        while (opos + 2 <= outerJpeg.length) {
+            int segStart = opos;
+            while (opos < outerJpeg.length && (outerJpeg[opos] & 0xFF) != 0xFF) {
+                opos++;
+            }
+            while (opos < outerJpeg.length && (outerJpeg[opos] & 0xFF) == 0xFF) {
+                opos++;
+            }
+            if (opos >= outerJpeg.length) {
+                break;
+            }
+            int marker = outerJpeg[opos++] & 0xFF;
+            if (marker == 0xDA) {
+                out.write(outerJpeg, segStart, outerJpeg.length - segStart);
+                break;
+            }
+            if (marker == 0xD9) {
+                out.write(outerJpeg, segStart, outerJpeg.length - segStart);
+                break;
+            }
+            if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8)) {
+                out.write(outerJpeg, segStart, opos - segStart);
+                continue;
+            }
+            if (opos + 2 > outerJpeg.length) {
+                throw new IOException("truncated JPEG segment");
+            }
+            int segLen = ((outerJpeg[opos] & 0xFF) << 8) | (outerJpeg[opos + 1] & 0xFF);
+            if (segLen < 2 || opos + segLen > outerJpeg.length) {
+                throw new IOException("invalid JPEG segment length");
+            }
+            int segEnd = opos + segLen;
+            if (marker != 0xE0 && marker != 0xE1 && marker != 0xE2) {
+                out.write(outerJpeg, segStart, segEnd - segStart);
+            }
+            opos = segEnd;
+        }
+
+        out.write(edit);
+        byte[] result = out.toByteArray();
+        if (!hasJpegEdit(result)) {
+            throw new IOException("verification failed: micamedit XMP not found in output JPEG");
+        }
+        return result;
+    }
+
+    private static void writeJpegSegment(ByteArrayOutputStream out, int marker, byte[] payload) {
+        int len = payload.length + 2;
+        out.write(0xFF);
+        out.write(marker);
+        out.write((len >>> 8) & 0xFF);
+        out.write(len & 0xFF);
+        out.write(payload, 0, payload.length);
+    }
+
+    private static boolean startsWith(byte[] buf, int off, int len, byte[] prefix) {
+        if (len < prefix.length || off + prefix.length > buf.length) {
+            return false;
+        }
+        for (int i = 0; i < prefix.length; i++) {
+            if (buf[off + i] != prefix[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ---- HEIF boxes --------------------------------------------------------------------------

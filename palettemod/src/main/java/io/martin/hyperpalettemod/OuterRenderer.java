@@ -82,23 +82,28 @@ final class OuterRenderer {
             Bitmap scaled = scaleThumb(bitmap);
             byte[] thumbJpeg = compressThumb(scaled);
 
-            temp = File.createTempFile("hpm_outer_", ".heic", app.getCacheDir());
-            try (HeifWriter writer = new HeifWriter.Builder(
-                    temp.getAbsolutePath(),
-                    bitmap.getWidth(),
-                    bitmap.getHeight(),
-                    HeifWriter.INPUT_MODE_BITMAP)
-                    .setQuality(HEIF_QUALITY)
-                    .setRotation(0)
-                    .build()) {
-                writer.start();
-                writer.addBitmap(bitmap);
-                writer.stop(HEIF_STOP_TIMEOUT_MS);
+            String encoder = "cameraheif";
+            byte[] encoded = encodeWithCameraHeif(module, cameraLoader, bitmap, scaled);
+            if (encoded == null || encoded.length == 0) {
+                encoder = "heifwriter";
+                temp = File.createTempFile("hpm_outer_", ".heic", app.getCacheDir());
+                try (HeifWriter writer = new HeifWriter.Builder(
+                        temp.getAbsolutePath(),
+                        bitmap.getWidth(),
+                        bitmap.getHeight(),
+                        HeifWriter.INPUT_MODE_BITMAP)
+                        .setQuality(HEIF_QUALITY)
+                        .setRotation(0)
+                        .build()) {
+                    writer.start();
+                    writer.addBitmap(bitmap);
+                    writer.stop(HEIF_STOP_TIMEOUT_MS);
+                }
+                encoded = Files.readAllBytes(temp.toPath());
             }
-            byte[] encoded = Files.readAllBytes(temp.toPath());
-            module.log(Log.INFO, TAG, "OuterRenderer [" + path + "]: rendered " + bitmap.getWidth()
-                    + "x" + bitmap.getHeight() + " -> " + encoded.length + " bytes (thumb "
-                    + (thumbJpeg != null ? thumbJpeg.length : 0) + " B) in "
+            module.log(Log.INFO, TAG, "OuterRenderer [" + path + "/" + encoder + "]: rendered "
+                    + bitmap.getWidth() + "x" + bitmap.getHeight() + " -> " + encoded.length
+                    + " bytes (thumb " + (thumbJpeg != null ? thumbJpeg.length : 0) + " B) in "
                     + (System.currentTimeMillis() - t0) + "ms");
             return new Result(encoded, thumbJpeg, scaled);
         } catch (Throwable t) {
@@ -111,6 +116,78 @@ final class OuterRenderer {
             if (temp != null) {
                 //noinspection ResultOfMethodCallIgnored
                 temp.delete();
+            }
+        }
+    }
+
+    // Encodes directly in memory using the camera's own native libcameraheif.so / libheif_jni.so
+    // (com.camera.heif.Heif), avoiding temp file I/O and attaching a native HEIF thmb item.
+    private static byte[] encodeWithCameraHeif(XposedModule module, ClassLoader loader,
+                                               Bitmap full, Bitmap thumb) {
+        Object heif = null;
+        Class<?> heifClass = null;
+        try {
+            heifClass = Class.forName("com.camera.heif.Heif", false, loader);
+            Class<?> imgClass = Class.forName("com.camera.heif.HeifImage", false, loader);
+            heif = heifClass.getDeclaredConstructor().newInstance();
+            Object img = imgClass.getDeclaredConstructor(Bitmap.class).newInstance(full);
+            if (thumb != null && !thumb.isRecycled()) {
+                Object thumbImg = imgClass.getDeclaredConstructor(Bitmap.class).newInstance(thumb);
+                imgClass.getMethod("setThumbnail", imgClass).invoke(img, thumbImg);
+            }
+            heifClass.getMethod("addImage", imgClass).invoke(heif, img);
+            heifClass.getMethod("setPrimaryImage", imgClass).invoke(heif, img);
+            return (byte[]) heifClass.getMethod("toBytes").invoke(heif);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "OuterRenderer cameraheif failed, falling back to HeifWriter: " + t);
+            return null;
+        } finally {
+            if (heif != null && heifClass != null) {
+                try {
+                    heifClass.getMethod("release").invoke(heif);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    static Result renderJpeg(XposedModule module, ClassLoader cameraLoader,
+                             byte[] unfilteredJpeg, ParamProbe.CaptureStyle style, String path) {
+        if (cameraLoader == null || style == null || style.candyParam() == null) {
+            return null;
+        }
+        long t0 = System.currentTimeMillis();
+        Bitmap bitmap = null;
+        try {
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inMutable = true;
+            opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            bitmap = BitmapFactory.decodeByteArray(unfilteredJpeg, 0, unfilteredJpeg.length, opts);
+            if (bitmap == null) {
+                module.log(Log.WARN, TAG, "OuterRenderer: failed to decode unfiltered JPEG");
+                return null;
+            }
+            applyCandy(cameraLoader, bitmap, style.candyParam(), style.lutBitmaps());
+            Bitmap scaled = scaleThumb(bitmap);
+            byte[] thumbJpeg = compressThumb(scaled);
+
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(unfilteredJpeg.length);
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, HEIF_QUALITY, out)) {
+                module.log(Log.WARN, TAG, "OuterRenderer: JPEG compress failed");
+                return null;
+            }
+            byte[] encoded = out.toByteArray();
+            module.log(Log.INFO, TAG, "OuterRenderer [" + path + "/jpeg]: rendered "
+                    + bitmap.getWidth() + "x" + bitmap.getHeight() + " -> " + encoded.length
+                    + " bytes (thumb " + (thumbJpeg != null ? thumbJpeg.length : 0) + " B) in "
+                    + (System.currentTimeMillis() - t0) + "ms");
+            return new Result(encoded, thumbJpeg, scaled);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "OuterRenderer JPEG failed, falling back to unfiltered outer: " + t);
+            return null;
+        } finally {
+            if (bitmap != null && !bitmap.isRecycled()) {
+                bitmap.recycle();
             }
         }
     }
