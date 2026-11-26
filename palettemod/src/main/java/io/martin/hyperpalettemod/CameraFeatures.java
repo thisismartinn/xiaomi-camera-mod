@@ -498,6 +498,9 @@ final class CameraFeatures {
             return false;
         }
         String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.contains("/thumbnails/")) {
+            return false;
+        }
         return lower.endsWith(".heic") || lower.endsWith(".jpg") || lower.endsWith(".jpeg");
     }
 

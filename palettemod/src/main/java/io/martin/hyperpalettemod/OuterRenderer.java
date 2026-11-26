@@ -82,26 +82,21 @@ final class OuterRenderer {
             Bitmap scaled = scaleThumb(bitmap);
             byte[] thumbJpeg = compressThumb(scaled);
 
-            String encoder = "cameraheif";
-            byte[] encoded = encodeWithCameraHeif(module, cameraLoader, bitmap, scaled);
-            if (encoded == null || encoded.length == 0) {
-                encoder = "heifwriter";
-                temp = File.createTempFile("hpm_outer_", ".heic", app.getCacheDir());
-                try (HeifWriter writer = new HeifWriter.Builder(
-                        temp.getAbsolutePath(),
-                        bitmap.getWidth(),
-                        bitmap.getHeight(),
-                        HeifWriter.INPUT_MODE_BITMAP)
-                        .setQuality(HEIF_QUALITY)
-                        .setRotation(0)
-                        .build()) {
-                    writer.start();
-                    writer.addBitmap(bitmap);
-                    writer.stop(HEIF_STOP_TIMEOUT_MS);
-                }
-                encoded = Files.readAllBytes(temp.toPath());
+            temp = File.createTempFile("hpm_outer_", ".heic", app.getCacheDir());
+            try (HeifWriter writer = new HeifWriter.Builder(
+                    temp.getAbsolutePath(),
+                    bitmap.getWidth(),
+                    bitmap.getHeight(),
+                    HeifWriter.INPUT_MODE_BITMAP)
+                    .setQuality(HEIF_QUALITY)
+                    .setRotation(0)
+                    .build()) {
+                writer.start();
+                writer.addBitmap(bitmap);
+                writer.stop(HEIF_STOP_TIMEOUT_MS);
             }
-            module.log(Log.INFO, TAG, "OuterRenderer [" + path + "/" + encoder + "]: rendered "
+            byte[] encoded = Files.readAllBytes(temp.toPath());
+            module.log(Log.INFO, TAG, "OuterRenderer [" + path + "/heic]: rendered "
                     + bitmap.getWidth() + "x" + bitmap.getHeight() + " -> " + encoded.length
                     + " bytes (thumb " + (thumbJpeg != null ? thumbJpeg.length : 0) + " B) in "
                     + (System.currentTimeMillis() - t0) + "ms");
@@ -116,37 +111,6 @@ final class OuterRenderer {
             if (temp != null) {
                 //noinspection ResultOfMethodCallIgnored
                 temp.delete();
-            }
-        }
-    }
-
-    // Encodes directly in memory using the camera's own native libcameraheif.so / libheif_jni.so
-    // (com.camera.heif.Heif), avoiding temp file I/O and attaching a native HEIF thmb item.
-    private static byte[] encodeWithCameraHeif(XposedModule module, ClassLoader loader,
-                                               Bitmap full, Bitmap thumb) {
-        Object heif = null;
-        Class<?> heifClass = null;
-        try {
-            heifClass = Class.forName("com.camera.heif.Heif", false, loader);
-            Class<?> imgClass = Class.forName("com.camera.heif.HeifImage", false, loader);
-            heif = heifClass.getDeclaredConstructor().newInstance();
-            Object img = imgClass.getDeclaredConstructor(Bitmap.class).newInstance(full);
-            if (thumb != null && !thumb.isRecycled()) {
-                Object thumbImg = imgClass.getDeclaredConstructor(Bitmap.class).newInstance(thumb);
-                imgClass.getMethod("setThumbnail", imgClass).invoke(img, thumbImg);
-            }
-            heifClass.getMethod("addImage", imgClass).invoke(heif, img);
-            heifClass.getMethod("setPrimaryImage", imgClass).invoke(heif, img);
-            return (byte[]) heifClass.getMethod("toBytes").invoke(heif);
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG, "OuterRenderer cameraheif failed, falling back to HeifWriter: " + t);
-            return null;
-        } finally {
-            if (heif != null && heifClass != null) {
-                try {
-                    heifClass.getMethod("release").invoke(heif);
-                } catch (Throwable ignored) {
-                }
             }
         }
     }
