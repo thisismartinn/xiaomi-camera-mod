@@ -3,6 +3,9 @@ package io.martin.hyperpalettemod;
 import android.app.Application;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.ColorSpace;
+import android.graphics.Gainmap;
+import android.os.Build;
 import android.util.Log;
 
 import androidx.heifwriter.HeifWriter;
@@ -14,16 +17,17 @@ import java.util.List;
 
 import io.github.libxposed.api.XposedModule;
 
-// Renders the camera's live filter + Palette look onto an unfiltered HEIC using the camera's own
-// CandySDK, then encodes the filtered Bitmap back to HEIC via Jetpack HeifWriter.
-// The caller then copies the original Exif item onto the rendered HEIC and embeds the unfiltered
-// HEIC inside the "edit" protobuf so Gallery shows the filtered photo while Media Editor can
-// non-destructively re-edit it.
+// Renders the camera's live filter + Palette look onto an unfiltered HEIC/JPEG using the camera's
+// own CandySDK, then encodes the filtered Bitmap back to HEIC (via Jetpack HeifWriter) or JPEG
+// (via Bitmap.compress, preserving Ultra HDR Gainmap when present).
+// The caller then copies the original Exif and color profile onto the rendered image and embeds
+// the unfiltered source inside the re-edit protobuf so Gallery shows the filtered photo while
+// Media Editor can non-destructively re-edit it.
 final class OuterRenderer {
     private static final String TAG = "HyperPaletteMod";
     private static final String CANDY_SDK = "com.xiaomi.milab.filtersdk.CandySDK";
     private static final int CANDY_MODE_BITMAP = 5;   // RGBA Bitmap (10 is YUV HardwareBuffer)
-    private static final int HEIF_QUALITY = 95;
+    private static final int OUTER_QUALITY = 98;
     private static final long HEIF_STOP_TIMEOUT_MS = 15_000L;
 
     private static final int THUMB_MAX_EDGE = 240;
@@ -77,6 +81,9 @@ final class OuterRenderer {
                 module.log(Log.WARN, TAG, "OuterRenderer: failed to decode unfiltered HEIC");
                 return null;
             }
+            ColorSpace cs = bitmap.getColorSpace();
+            boolean hasGainmap = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+                    && bitmap.hasGainmap();
 
             applyCandy(cameraLoader, bitmap, style.candyParam(), style.lutBitmaps());
             Bitmap scaled = scaleThumb(bitmap);
@@ -88,7 +95,7 @@ final class OuterRenderer {
                     bitmap.getWidth(),
                     bitmap.getHeight(),
                     HeifWriter.INPUT_MODE_BITMAP)
-                    .setQuality(HEIF_QUALITY)
+                    .setQuality(OUTER_QUALITY)
                     .setRotation(0)
                     .build()) {
                 writer.start();
@@ -98,7 +105,9 @@ final class OuterRenderer {
             byte[] encoded = Files.readAllBytes(temp.toPath());
             module.log(Log.INFO, TAG, "OuterRenderer [" + path + "/heic]: rendered "
                     + bitmap.getWidth() + "x" + bitmap.getHeight() + " -> " + encoded.length
-                    + " bytes (thumb " + (thumbJpeg != null ? thumbJpeg.length : 0) + " B) in "
+                    + " bytes (q=" + OUTER_QUALITY + ", cs=" + (cs != null ? cs.getName() : "null")
+                    + ", gainmap=" + hasGainmap + ", thumb "
+                    + (thumbJpeg != null ? thumbJpeg.length : 0) + " B) in "
                     + (System.currentTimeMillis() - t0) + "ms");
             return new Result(encoded, thumbJpeg, scaled);
         } catch (Throwable t) {
@@ -131,19 +140,29 @@ final class OuterRenderer {
                 module.log(Log.WARN, TAG, "OuterRenderer: failed to decode unfiltered JPEG");
                 return null;
             }
+            ColorSpace cs = bitmap.getColorSpace();
+            Gainmap gainmap = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+                    && bitmap.hasGainmap() ? bitmap.getGainmap() : null;
+
             applyCandy(cameraLoader, bitmap, style.candyParam(), style.lutBitmaps());
+            if (gainmap != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+                    && !bitmap.hasGainmap()) {
+                bitmap.setGainmap(gainmap);
+            }
             Bitmap scaled = scaleThumb(bitmap);
             byte[] thumbJpeg = compressThumb(scaled);
 
             java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(unfilteredJpeg.length);
-            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, HEIF_QUALITY, out)) {
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, OUTER_QUALITY, out)) {
                 module.log(Log.WARN, TAG, "OuterRenderer: JPEG compress failed");
                 return null;
             }
             byte[] encoded = out.toByteArray();
             module.log(Log.INFO, TAG, "OuterRenderer [" + path + "/jpeg]: rendered "
                     + bitmap.getWidth() + "x" + bitmap.getHeight() + " -> " + encoded.length
-                    + " bytes (thumb " + (thumbJpeg != null ? thumbJpeg.length : 0) + " B) in "
+                    + " bytes (q=" + OUTER_QUALITY + ", cs=" + (cs != null ? cs.getName() : "null")
+                    + ", gainmap=" + (gainmap != null) + ", thumb "
+                    + (thumbJpeg != null ? thumbJpeg.length : 0) + " B) in "
                     + (System.currentTimeMillis() - t0) + "ms");
             return new Result(encoded, thumbJpeg, scaled);
         } catch (Throwable t) {

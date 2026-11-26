@@ -53,6 +53,10 @@ final class ReEditInjector {
     private static final int INFE = cc("infe");
     private static final int IREF = cc("iref");
     private static final int CDSC = cc("cdsc");
+    private static final int IPRP = cc("iprp");
+    private static final int IPCO = cc("ipco");
+    private static final int IPMA = cc("ipma");
+    private static final int COLR = cc("colr");
     private static final int EXIF = cc("Exif");
     private static final int EDIT = cc("edit");
     private static final int MIME = cc("mime");
@@ -120,6 +124,169 @@ final class ReEditInjector {
         } catch (Throwable ignored) {
         }
         return null;
+    }
+
+    // Extracts the raw "colr" property box from a HEIC's ipco (preferring prof/rICC Display P3
+    // ICC profiles over nclx), or null if none is present.
+    static byte[] extractColr(byte[] file) {
+        try {
+            Box meta = null;
+            for (Box box : boxes(file, 0, file.length)) {
+                if (box.type == META) {
+                    meta = box;
+                    break;
+                }
+            }
+            if (meta == null) {
+                return null;
+            }
+            Box iprp = null;
+            for (Box kid : boxes(file, meta.start + meta.header + 4, meta.end())) {
+                if (kid.type == IPRP) {
+                    iprp = kid;
+                    break;
+                }
+            }
+            if (iprp == null) {
+                return null;
+            }
+            Box ipco = null;
+            for (Box kid : boxes(file, iprp.start + iprp.header, iprp.end())) {
+                if (kid.type == IPCO) {
+                    ipco = kid;
+                    break;
+                }
+            }
+            if (ipco == null) {
+                return null;
+            }
+            byte[] fallback = null;
+            int prof = cc("prof");
+            int rIcc = cc("rICC");
+            for (Box prop : boxes(file, ipco.start + ipco.header, ipco.end())) {
+                if (prop.type == COLR && prop.size >= prop.header + 4) {
+                    int subtype = (int) u32(file, prop.start + prop.header);
+                    if (subtype == prof || subtype == rIcc) {
+                        return Arrays.copyOfRange(file, prop.start, prop.end());
+                    }
+                    if (fallback == null) {
+                        fallback = Arrays.copyOfRange(file, prop.start, prop.end());
+                    }
+                }
+            }
+            return fallback;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    // Replaces an existing colr box in ipco, or appends colrBox to ipco and links it to primaryId
+    // in ipma. Returns the rebuilt iprp box bytes, or null if iprp cannot be safely patched.
+    private static byte[] patchIprpColr(byte[] file, Box iprp, int primaryId, byte[] colrBox) {
+        try {
+            List<Box> iprpKids = boxes(file, iprp.start + iprp.header, iprp.end());
+            Box ipco = null;
+            Box ipma = null;
+            for (Box kid : iprpKids) {
+                if (kid.type == IPCO && ipco == null) {
+                    ipco = kid;
+                } else if (kid.type == IPMA && ipma == null) {
+                    ipma = kid;
+                }
+            }
+            if (ipco == null || ipma == null) {
+                return null;
+            }
+            List<Box> props = boxes(file, ipco.start + ipco.header, ipco.end());
+            int existingColrIdx = -1;
+            for (int i = 0; i < props.size(); i++) {
+                if (props.get(i).type == COLR) {
+                    existingColrIdx = i;
+                    break;
+                }
+            }
+
+            byte[] ipcoBytes;
+            byte[] ipmaBytes = null;
+            if (existingColrIdx >= 0) {
+                // Replace the existing colr property in-place; ipma indices stay valid.
+                Box oldColr = props.get(existingColrIdx);
+                ByteArrayOutputStream newIpco = new ByteArrayOutputStream(
+                        ipco.size - oldColr.size + colrBox.length);
+                newIpco.write(file, ipco.start, oldColr.start - ipco.start);
+                newIpco.write(colrBox);
+                newIpco.write(file, oldColr.end(), ipco.end() - oldColr.end());
+                ipcoBytes = setBoxSize(newIpco.toByteArray(), ipco.header);
+            } else {
+                // Append colrBox to ipco and associate its 1-based index with primaryId in ipma.
+                int newIndex = props.size() + 1;
+                int ipmaVer = file[ipma.start + ipma.header] & 0xFF;
+                int ipmaFlags = ((file[ipma.start + ipma.header + 1] & 0xFF) << 16)
+                        | ((file[ipma.start + ipma.header + 2] & 0xFF) << 8)
+                        | (file[ipma.start + ipma.header + 3] & 0xFF);
+                boolean largeIdx = (ipmaFlags & 1) != 0;
+                if (!largeIdx && newIndex > 127) {
+                    return null;
+                }
+                int idSize = ipmaVer < 1 ? 2 : 4;
+                int assocSize = largeIdx ? 2 : 1;
+                int p = ipma.start + ipma.header + 4;
+                long entryCount = u32(file, p);
+                p += 4;
+                ByteArrayOutputStream newIpma = new ByteArrayOutputStream(ipma.size + assocSize);
+                newIpma.write(file, ipma.start, ipma.header + 8);   // header + ver/flags + count
+                boolean patchedPrimary = false;
+                for (long i = 0; i < entryCount; i++) {
+                    if (p + idSize + 1 > ipma.end()) {
+                        return null;
+                    }
+                    int itemId = idSize == 2 ? (int) u16(file, p) : (int) u32(file, p);
+                    int count = file[p + idSize] & 0xFF;
+                    int assocsLen = count * assocSize;
+                    if (p + idSize + 1 + assocsLen > ipma.end()) {
+                        return null;
+                    }
+                    writeUInt(newIpma, itemId, idSize);
+                    if (itemId == primaryId && !patchedPrimary && count < 255) {
+                        newIpma.write(count + 1);
+                        newIpma.write(file, p + idSize + 1, assocsLen);
+                        writeUInt(newIpma, newIndex, assocSize);   // essential=0
+                        patchedPrimary = true;
+                    } else {
+                        newIpma.write(count);
+                        newIpma.write(file, p + idSize + 1, assocsLen);
+                    }
+                    p += idSize + 1 + assocsLen;
+                }
+                if (!patchedPrimary || p != ipma.end()) {
+                    return null;
+                }
+                ipmaBytes = setBoxSize(newIpma.toByteArray(), ipma.header);
+
+                ByteArrayOutputStream newIpco = new ByteArrayOutputStream(
+                        ipco.size + colrBox.length);
+                newIpco.write(file, ipco.start, ipco.size);
+                newIpco.write(colrBox);
+                ipcoBytes = setBoxSize(newIpco.toByteArray(), ipco.header);
+            }
+
+            ByteArrayOutputStream newIprp = new ByteArrayOutputStream(
+                    iprp.size + (ipcoBytes.length - ipco.size)
+                            + (ipmaBytes != null ? ipmaBytes.length - ipma.size : 0));
+            newIprp.write(file, iprp.start, iprp.header);
+            for (Box kid : iprpKids) {
+                if (kid == ipco) {
+                    newIprp.write(ipcoBytes);
+                } else if (kid == ipma && ipmaBytes != null) {
+                    newIprp.write(ipmaBytes);
+                } else {
+                    newIprp.write(file, kid.start, kid.size);
+                }
+            }
+            return setBoxSize(newIprp.toByteArray(), iprp.header);
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     // Returns a copy of a HEIF Exif item with (1) the EXIF IFD1 JPEG thumbnail replaced in-place
@@ -377,6 +544,7 @@ final class ReEditInjector {
         Box iinf = null;
         Box iloc = null;
         Box iref = null;
+        Box iprp = null;
         for (Box kid : kids) {
             if (kid.type == PITM) {
                 pitm = kid;
@@ -386,6 +554,8 @@ final class ReEditInjector {
                 iloc = kid;
             } else if (kid.type == IREF) {
                 iref = kid;
+            } else if (kid.type == IPRP) {
+                iprp = kid;
             }
         }
         if (pitm == null || iinf == null || iloc == null) {
@@ -471,6 +641,19 @@ final class ReEditInjector {
             xmp = newXmp(edit.length);
         }
 
+        // ---- optional colr (Display P3 / ICC profile) copy from sourceImage ----
+        byte[] iprpBytes = null;
+        int iprpGrowth = 0;
+        if (file != sourceImage && iprp != null) {
+            byte[] srcColr = extractColr(sourceImage);
+            if (srcColr != null) {
+                iprpBytes = patchIprpColr(file, iprp, primaryId, srcColr);
+                if (iprpBytes != null) {
+                    iprpGrowth = iprpBytes.length - iprp.size;
+                }
+            }
+        }
+
         // ---- sizes first, because every offset after meta moves by the growth ----
         boolean addXmpItem = xmpId < 0;
         byte[] editInfe = infe(editId, "edit", null);
@@ -488,7 +671,7 @@ final class ReEditInjector {
         byte[] exifRef = addExifItem ? cdsc(newExifId, primaryId, irefIdSize) : new byte[0];
         int irefGrowth = (iref == null ? 12 : 0) + editRef.length + xmpRef.length + exifRef.length;
 
-        int growth = iinfGrowth + ilocGrowth + irefGrowth;
+        int growth = iinfGrowth + ilocGrowth + irefGrowth + iprpGrowth;
         long metaEnd = meta.end();
 
         long newMdatStart = (long) file.length + growth;
@@ -566,6 +749,8 @@ final class ReEditInjector {
                 newMeta.write(ilocBytes);
             } else if (kid == iref) {
                 newMeta.write(irefBytes);
+            } else if (kid == iprp && iprpBytes != null) {
+                newMeta.write(iprpBytes);
             } else {
                 newMeta.write(file, kid.start, kid.size);
             }
@@ -704,6 +889,8 @@ final class ReEditInjector {
     private static final byte[] JPEG_XMP_HDR =
             "http://ns.adobe.com/xap/1.0/\0".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] JPEG_XMTH_HDR = "XMTH".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] JPEG_MPF_HDR = "MPF\0".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] JPEG_ICC_HDR = "ICC_PROFILE\0".getBytes(StandardCharsets.US_ASCII);
 
     private static boolean hasJpegEdit(byte[] file) {
         int pos = 2;
@@ -755,10 +942,11 @@ final class ReEditInjector {
             return null;
         }
 
-        // Extract Exif, existing XMP, and non-XMTH APP2 segments (e.g. ICC_PROFILE) from sourceJpeg.
+        // Extract Exif, existing XMP, and ICC_PROFILE APP2 segments from sourceJpeg (skip XMTH and
+        // sourceJpeg's old MPF, which has offsets for sourceJpeg rather than outerJpeg).
         byte[] srcExif = null;
         byte[] srcXmp = null;
-        List<byte[]> srcApp2 = new ArrayList<>();
+        List<byte[]> srcIcc = new ArrayList<>();
         int pos = 2;
         while (pos + 4 <= sourceJpeg.length) {
             while (pos < sourceJpeg.length && (sourceJpeg[pos] & 0xFF) != 0xFF) {
@@ -794,12 +982,16 @@ final class ReEditInjector {
                             payloadStart + payloadLen);
                 }
             } else if (marker == 0xE2) {
-                if (!startsWith(sourceJpeg, payloadStart, payloadLen, JPEG_XMTH_HDR)) {
-                    srcApp2.add(Arrays.copyOfRange(sourceJpeg, payloadStart, payloadStart + payloadLen));
+                if (startsWith(sourceJpeg, payloadStart, payloadLen, JPEG_ICC_HDR)) {
+                    srcIcc.add(Arrays.copyOfRange(sourceJpeg, payloadStart, payloadStart + payloadLen));
                 }
             }
             pos += segLen;
         }
+
+        // If outerJpeg is an Ultra HDR JPEG (e.g. from Bitmap.compress with Gainmap), prefer its
+        // XMP so Container:Directory / GainMap Item:Length matches outerJpeg's secondary image.
+        byte[] outerHdrXmp = extractUltraHdrXmp(outerJpeg);
 
         if (srcExif != null && filteredThumbJpeg != null) {
             // Reuse stripExifThumbnail (expects 4-byte BE offset to TIFF header: 6 for "Exif\0\0").
@@ -813,7 +1005,8 @@ final class ReEditInjector {
         }
 
         byte[] edit = buildEdit(sourceJpeg, editorFilterId, progress, nativeStyle, styleAdjust);
-        byte[] xmpBody = srcXmp != null ? mergeXmp(srcXmp, edit.length, edit.length)
+        byte[] baseXmp = outerHdrXmp != null ? outerHdrXmp : srcXmp;
+        byte[] xmpBody = baseXmp != null ? mergeXmp(baseXmp, edit.length, edit.length)
                 : newXmp(edit.length, edit.length);
         if (JPEG_XMP_HDR.length + xmpBody.length + 2 > 0xFFFF) {
             throw new IOException("XMP APP1 exceeds 64 KB JPEG segment limit");
@@ -831,15 +1024,18 @@ final class ReEditInjector {
         System.arraycopy(JPEG_XMP_HDR, 0, xmpPayload, 0, JPEG_XMP_HDR.length);
         System.arraycopy(xmpBody, 0, xmpPayload, JPEG_XMP_HDR.length, xmpBody.length);
         writeJpegSegment(out, 0xE1, xmpPayload);
-        for (byte[] app2 : srcApp2) {
-            if (app2.length + 2 <= 0xFFFF) {
-                writeJpegSegment(out, 0xE2, app2);
+        for (byte[] icc : srcIcc) {
+            if (icc.length + 2 <= 0xFFFF) {
+                writeJpegSegment(out, 0xE2, icc);
             }
         }
 
-        // Copy image body from outerJpeg, skipping its APP0/APP1/APP2 segments so we don't
-        // duplicate Exif/XMP/XMTH.
+        // Copy image body from outerJpeg, skipping its APP0/APP1 and non-MPF APP2 segments so we
+        // don't duplicate Exif/XMP/ICC/XMTH. If outerJpeg contains an Ultra HDR MPF segment, keep
+        // it and adjust MPEntry[0].size by the net header growth before MPF; everything after MPF
+        // (including the secondary GainMap JPEG) is copied verbatim so relative MPF offsets hold.
         int opos = 2;
+        boolean sawMpf = false;
         while (opos + 2 <= outerJpeg.length) {
             int segStart = opos;
             while (opos < outerJpeg.length && (outerJpeg[opos] & 0xFF) != 0xFF) {
@@ -852,11 +1048,7 @@ final class ReEditInjector {
                 break;
             }
             int marker = outerJpeg[opos++] & 0xFF;
-            if (marker == 0xDA) {
-                out.write(outerJpeg, segStart, outerJpeg.length - segStart);
-                break;
-            }
-            if (marker == 0xD9) {
+            if (marker == 0xDA || marker == 0xD9) {
                 out.write(outerJpeg, segStart, outerJpeg.length - segStart);
                 break;
             }
@@ -871,8 +1063,18 @@ final class ReEditInjector {
             if (segLen < 2 || opos + segLen > outerJpeg.length) {
                 throw new IOException("invalid JPEG segment length");
             }
+            int payloadStart = opos + 2;
+            int payloadLen = segLen - 2;
             int segEnd = opos + segLen;
-            if (marker != 0xE0 && marker != 0xE1 && marker != 0xE2) {
+            if (sawMpf) {
+                out.write(outerJpeg, segStart, segEnd - segStart);
+            } else if (marker == 0xE2 && startsWith(outerJpeg, payloadStart, payloadLen, JPEG_MPF_HDR)) {
+                byte[] mpfPayload = Arrays.copyOfRange(outerJpeg, payloadStart, payloadStart + payloadLen);
+                int primarySizeDelta = out.size() - segStart;
+                patchMpfPrimarySize(mpfPayload, primarySizeDelta);
+                writeJpegSegment(out, 0xE2, mpfPayload);
+                sawMpf = true;
+            } else if (marker != 0xE0 && marker != 0xE1 && marker != 0xE2) {
                 out.write(outerJpeg, segStart, segEnd - segStart);
             }
             opos = segEnd;
@@ -884,6 +1086,91 @@ final class ReEditInjector {
             throw new IOException("verification failed: micamedit XMP not found in output JPEG");
         }
         return result;
+    }
+
+    private static byte[] extractUltraHdrXmp(byte[] jpeg) {
+        int pos = 2;
+        while (pos + 4 <= jpeg.length) {
+            while (pos < jpeg.length && (jpeg[pos] & 0xFF) != 0xFF) {
+                pos++;
+            }
+            while (pos < jpeg.length && (jpeg[pos] & 0xFF) == 0xFF) {
+                pos++;
+            }
+            if (pos >= jpeg.length) {
+                break;
+            }
+            int marker = jpeg[pos++] & 0xFF;
+            if (marker == 0xDA || marker == 0xD9) {
+                break;
+            }
+            if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8)) {
+                continue;
+            }
+            if (pos + 2 > jpeg.length) {
+                break;
+            }
+            int segLen = ((jpeg[pos] & 0xFF) << 8) | (jpeg[pos + 1] & 0xFF);
+            if (segLen < 2 || pos + segLen > jpeg.length) {
+                break;
+            }
+            int payloadStart = pos + 2;
+            int payloadLen = segLen - 2;
+            if (marker == 0xE1 && startsWith(jpeg, payloadStart, payloadLen, JPEG_XMP_HDR)) {
+                byte[] xmp = Arrays.copyOfRange(jpeg, payloadStart + JPEG_XMP_HDR.length,
+                        payloadStart + payloadLen);
+                String text = new String(xmp, StandardCharsets.UTF_8);
+                if (text.contains("GainMap") || text.contains("hdrgm")
+                        || text.contains("Container:Directory")) {
+                    return xmp;
+                }
+            }
+            pos += segLen;
+        }
+        return null;
+    }
+
+    // Updates MPEntry[0].size (primary image byte length) in an APP2 "MPF\0" payload by delta.
+    // Secondary image offsets in MPF are relative to the MPF TIFF header, so they stay valid
+    // whenever bytes are inserted only before MPF.
+    private static void patchMpfPrimarySize(byte[] mpf, int delta) {
+        if (delta == 0 || mpf.length < 16) {
+            return;
+        }
+        int tiff = 4;   // right after "MPF\0"
+        boolean bigEndian = mpf[tiff] == 'M' && mpf[tiff + 1] == 'M';
+        boolean littleEndian = mpf[tiff] == 'I' && mpf[tiff + 1] == 'I';
+        if (!bigEndian && !littleEndian) {
+            return;
+        }
+        if (tiffU16(mpf, tiff + 2, bigEndian) != 42) {
+            return;
+        }
+        int ifd0 = tiff + tiffU32(mpf, tiff + 4, bigEndian);
+        if (ifd0 < tiff || ifd0 + 2 > mpf.length) {
+            return;
+        }
+        int count = tiffU16(mpf, ifd0, bigEndian);
+        if (ifd0 + 2 + count * 12 > mpf.length) {
+            return;
+        }
+        for (int i = 0; i < count; i++) {
+            int p = ifd0 + 2 + i * 12;
+            int tag = tiffU16(mpf, p, bigEndian);
+            if (tag == 0xB002) {   // MPEntry
+                int byteCount = tiffU32(mpf, p + 4, bigEndian);
+                int valOff = tiffU32(mpf, p + 8, bigEndian);
+                int entry0 = tiff + valOff;
+                if (byteCount >= 16 && entry0 >= tiff && entry0 + 16 <= mpf.length) {
+                    int oldSize = tiffU32(mpf, entry0 + 4, bigEndian);
+                    int newSize = oldSize + delta;
+                    if (newSize > 0) {
+                        putTiffU32(mpf, entry0 + 4, newSize, bigEndian);
+                    }
+                }
+                return;
+            }
+        }
     }
 
     private static void writeJpegSegment(ByteArrayOutputStream out, int marker, byte[] payload) {
