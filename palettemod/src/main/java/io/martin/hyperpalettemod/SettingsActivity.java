@@ -89,7 +89,7 @@ public class SettingsActivity extends Activity {
                 "Saves the unfiltered source + live Palette values. Force-stop Camera after changing.",
                 Settings.CAMERA_JAVA_FILTER);
 
-        root.addView(label("HEIC re-edit data", 16, false));
+        root.addView(label("Photo re-edit data", 16, false));
         modeGroup = new RadioGroup(this);
         modeGroup.setOrientation(RadioGroup.VERTICAL);
         String[] modeLabels = {"Off", "Filtered photos", "Every photo"};
@@ -112,7 +112,7 @@ public class SettingsActivity extends Activity {
             }
         });
         root.addView(modeGroup);
-        root.addView(note("Embeds re-edit metadata into saved HEICs."));
+        root.addView(note("Embeds re-edit metadata into saved HEIC and JPEG photos."));
 
         LinearLayout filterRow = new LinearLayout(this);
         filterRow.setOrientation(LinearLayout.HORIZONTAL);

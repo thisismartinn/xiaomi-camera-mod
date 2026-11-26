@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">HyperPaletteMod</string>
-    <string name="module_description">Palette for the Xiaomi Media Editor and Camera: opens the editor\'s Palette pad on this phone and adds the re-edit data it needs to photos taken with a filter. Draft.</string>
+    <string name="module_description">Palette for the Xiaomi Media Editor and Camera: opens the editor\'s Palette pad on this phone and adds the re-edit data it needs to HEIC and JPEG photos taken with a filter.</string>
 </resources>
